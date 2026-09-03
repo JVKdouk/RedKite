@@ -46,8 +46,8 @@ function supplied(trace: string[]): AnyStep[] {
       trace.push("build");
       return { ...input, apps: [] };
     }),
-    defineStep("deploy", (input) => {
-      trace.push("deploy");
+    defineStep("swap", (input) => {
+      trace.push("swap");
       return { ...input, ok: true, released: ["web"], reverted: [] };
     }),
     defineStep("cleanup", (input) => {
@@ -69,13 +69,13 @@ describe("where a step runs", () => {
 
     const added: AnyStep[] = [
       record(trace, "cleanup:after:notify"),
-      record(trace, "deploy:before:announce"),
+      record(trace, "swap:before:announce"),
       record(trace, "setup:before:check"),
       record(trace, "setup:provision"),
       record(trace, "build:after:sourcemaps"),
       record(trace, "build:before:warm"),
       record(trace, "setup:after:seed"),
-      record(trace, "deploy:after:tag"),
+      record(trace, "swap:after:tag"),
       record(trace, "cleanup:before:drain"),
     ];
 
@@ -89,9 +89,9 @@ describe("where a step runs", () => {
       "build:before:warm",
       "build",
       "build:after:sourcemaps",
-      "deploy:before:announce",
-      "deploy",
-      "deploy:after:tag",
+      "swap:before:announce",
+      "swap",
+      "swap:after:tag",
       "cleanup:before:drain",
       "cleanup",
       "cleanup:after:notify",
@@ -103,16 +103,16 @@ describe("where a step runs", () => {
 
     await runPipeline(
       merge(supplied(trace), [
-        record(trace, "deploy:after:first"),
-        record(trace, "deploy:after:second"),
-        record(trace, "deploy:after:third"),
+        record(trace, "swap:after:first"),
+        record(trace, "swap:after:second"),
+        record(trace, "swap:after:third"),
       ]),
       setting(),
     );
 
     assert.deepEqual(
-      trace.filter((event) => event.startsWith("deploy:after:")),
-      ["deploy:after:first", "deploy:after:second", "deploy:after:third"],
+      trace.filter((event) => event.startsWith("swap:after:")),
+      ["swap:after:first", "swap:after:second", "swap:after:third"],
     );
   });
 });
@@ -131,7 +131,7 @@ describe("a step at a point redkite already uses", () => {
 
     await runPipeline(steps, setting());
 
-    assert.deepEqual(trace, ["setup", "mine", "deploy", "cleanup"]);
+    assert.deepEqual(trace, ["setup", "mine", "swap", "cleanup"]);
   });
 
   it("is how one of redkite's is turned off", async () => {
@@ -150,10 +150,45 @@ describe("a step at a point redkite already uses", () => {
 
   it("leaves a point redkite does not use alone", () => {
     const trace: string[] = [];
-    const mine = record(trace, "deploy:after:notify");
+    const mine = record(trace, "swap:after:notify");
     const points = sequence(merge(supplied(trace), [mine])).map((step) => step.point);
 
-    assert.deepEqual(points, ["setup", "build", "deploy", "deploy:after:notify", "cleanup"]);
+    assert.deepEqual(points, ["setup", "build", "swap", "swap:after:notify", "cleanup"]);
+  });
+});
+
+// A step that cannot possibly work should say so before the run touches
+// anything, not once the network is up and the images are built
+describe("what a step checks before the run", () => {
+  it("runs every check before the first step", async () => {
+    const trace: string[] = [];
+    const checked: AnyStep = {
+      point: "cleanup:after:notify",
+      check: () => trace.push("checked"),
+      run: (input) => input,
+    };
+
+    await runPipeline(merge(supplied(trace), [checked]), setting());
+
+    assert.equal(trace[0], "checked");
+  });
+
+  it("ends the run without having run a step", async () => {
+    const trace: string[] = [];
+    const broken: AnyStep = {
+      point: "swap:before:migrate",
+      check: () => {
+        throw new Error("backend needs keepBuilder: true");
+      },
+      run: (input) => input,
+    };
+
+    await assert.rejects(
+      () => runPipeline(merge(supplied(trace), [broken]), setting()),
+      /keepBuilder/,
+    );
+
+    assert.deepEqual(trace, []);
   });
 });
 
@@ -162,8 +197,8 @@ describe("what a step is handed", () => {
     const seen: Released[] = [];
 
     const added: AnyStep[] = [
-      defineStep("deploy:after:one", (input) => ({ ...input, released: ["rewritten"] })),
-      defineStep("deploy:after:two", (input) => {
+      defineStep("swap:after:one", (input) => ({ ...input, released: ["rewritten"] })),
+      defineStep("swap:after:two", (input) => {
         seen.push(input);
         return input;
       }),
@@ -249,30 +284,37 @@ describe("a point that is not one", () => {
     assert.throws(() => addressOf("provision"), /names no phase/);
   });
 
+  // The phase that moves the addresses used to be called deploy, and a config
+  // written against it should be told what it became rather than what it is not
+  it("says what a phase that was renamed became", () => {
+    assert.throws(() => addressOf("deploy:before:migrate"), /which is now swap/);
+    assert.throws(() => addressOf("deploy"), /which is now swap/);
+  });
+
   it("addresses redkite's own step by the phase alone", () => {
     assert.deepEqual(addressOf("build"), { phase: "build", slot: "main", name: "build" });
-    assert.deepEqual(addressOf("deploy:migrate"), {
-      phase: "deploy",
+    assert.deepEqual(addressOf("swap:migrate"), {
+      phase: "swap",
       slot: "main",
       name: "migrate",
     });
   });
 
   it("spells its slot", () => {
-    assert.throws(() => addressOf("deploy:around:x"), /names no slot/);
-    assert.throws(() => addressOf("deploy:after:x:y"), /is not a point/);
+    assert.throws(() => addressOf("swap:around:x"), /names no slot/);
+    assert.throws(() => addressOf("swap:after:x:y"), /is not a point/);
   });
 
   it("is named the way everything else redkite derives is", () => {
-    assert.throws(() => addressOf("deploy:after:"), /kebab-case/);
-    assert.throws(() => addressOf("deploy:after:Notify"), /kebab-case/);
-    assert.equal(addressOf("deploy:after:upload-sourcemaps").name, "upload-sourcemaps");
+    assert.throws(() => addressOf("swap:after:"), /kebab-case/);
+    assert.throws(() => addressOf("swap:after:Notify"), /kebab-case/);
+    assert.equal(addressOf("swap:after:upload-sourcemaps").name, "upload-sourcemaps");
   });
 
   it("is refused twice over", () => {
     const steps = [
-      defineStep("deploy:after:notify", (input) => input),
-      defineStep("deploy:after:notify", (input) => input),
+      defineStep("swap:after:notify", (input) => input),
+      defineStep("swap:after:notify", (input) => input),
     ];
 
     assert.throws(() => assertSteps(steps), /Two steps share the point/);

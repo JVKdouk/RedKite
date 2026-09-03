@@ -288,10 +288,10 @@ build                   redkite: resolves, checks out and builds every image
 build:<name>
 build:after:<name>
 
-deploy:before:<name>
-deploy                  redkite: before-swap, swap, health check, revert
-deploy:<name>
-deploy:after:<name>
+swap:before:<name>
+swap                    redkite: moves the addresses, health checks, reverts
+swap:<name>
+swap:after:<name>
 
 cleanup:before:<name>
 cleanup                 redkite: removes the retired containers and old images
@@ -334,7 +334,7 @@ was written assuming the steps before did what they said.
 
 The value grows as the run goes, so a late step reads everything above it:
 `environment` from the start, `network` and `services` after setup, `apps` after
-build, `ok` and `released` and `reverted` after deploy, `removed` and
+build, `ok` and `released` and `reverted` after swap, `removed` and
 `reclaimed` after cleanup.
 
 What a step is handed is decided by where it runs, so the example above compiles
@@ -342,12 +342,77 @@ with no annotation and `built.apps` is known to exist. A step at a point in a
 phase nobody defined does not compile, and a replacement for one of redkite's four
 has to answer with what the rest of the run expects.
 
+### Migrations
+
+A migration is a step like any other. `migrate()` answers with one at
+`swap:before:migrate-<app>`, so it runs in the image that was just built, while
+the old containers are still serving, and throws before anything retires.
+
+```ts
+import { migrate } from "redkite-cd";
+
+export default defineDeployment({
+  apps: [
+    {
+      name: "backend",
+      // The runtime image holds only the output, so the toolchain the migration
+      // needs is kept as an image of its own
+      keepBuilder: true,
+      // ...
+    },
+  ],
+
+  steps: [migrate({ app: "backend", command: "yarn db:migrate" })],
+});
+```
+
+An app that migrates without `keepBuilder`, or a step naming an app the
+deployment does not have, fails before the run starts rather than half way
+through it.
+
+#### The network a step runs on
+
+A migration defaults to `host`: the deploy host's own network stack, which is
+what reaches a database that machine already reaches. A database this deployment
+runs as a service is somewhere else, so say so:
+
+```ts
+migrate({ app: "backend", command: "yarn db:migrate", network: "deployment" })
+```
+
+| `network` | Where the container is attached |
+| --- | --- |
+| `"host"` | The deploy host's own stack. The default |
+| `"deployment"` | The network the apps and services run on, with every alias they resolve, so `postgres:5432` works |
+| `"none"` | Nothing at all |
+| `{ named: "..." }` | A network somebody else made |
+
+`attachment()` answers with the same flags for a step of your own:
+
+```ts
+import { attachment, defineStep } from "redkite-cd";
+
+defineStep("swap:before:seed", async (built, context) => {
+  const image = built.apps.find((app) => app.name === "backend")?.builderTag;
+  if (!image) throw new Error("backend did not keep its builder");
+
+  await context.docker.runOrThrow(
+    ["run --rm", ...attachment("deployment", context.topology), image, "yarn db:seed"].join(" "),
+    "seeding failed",
+  );
+
+  return built;
+});
+```
+
+### Plugins
+
 A plugin is a function answering with steps, the way `redis()` answers with a
 service spec:
 
 ```ts
 const slack = (webhook: string) => [
-  defineStep("deploy:before:announce", async (built) => {
+  defineStep("swap:before:announce", async (built) => {
     await fetch(webhook, { method: "POST", body: `deploying ${built.apps.length} apps` });
     return built;
   }),
@@ -400,9 +465,9 @@ with the agent forwarded.
 4. **Build.** The pipeline is rendered as a Dockerfile beside the checkout and
    handed to the BuildKit already inside the daemon. Skipped entirely when the
    host is already holding this exact image.
-5. **Before-swap.** Your migration runs in the builder image on the host's own
-   network, while the old containers are still serving. It throws, so a failure
-   retires nothing.
+5. **`swap:before`.** Anything hung here runs while the old containers are still
+   serving. A migration is the usual one, and it throws, so a failure retires
+   nothing.
 6. **Swap.** The running container moves to the retired address without being
    stopped and is renamed, and only then does the live address belong to the new
    one. Nginx keeps the retired container as a backup upstream.

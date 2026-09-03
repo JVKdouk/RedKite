@@ -25,12 +25,12 @@ defineStep("build:after:sourcemaps", (input) => {
   return built;
 });
 
-defineStep("deploy:before:announce", (input) => {
+defineStep("swap:before:announce", (input) => {
   const built: Built = input;
   return built;
 });
 
-defineStep("deploy:after:record", (input) => {
+defineStep("swap:after:record", (input) => {
   const released: Released = input;
   return released;
 });
@@ -56,11 +56,16 @@ defineStep("provision:after:x", (input) => input);
 // @ts-expect-error
 defineStep("provision", (input) => input);
 
-// Nothing before the deploy step has a release to read
+// Nothing before the swap step has a release to read
 // @ts-expect-error
-defineStep("deploy:before:early", (input: Released) => input);
+defineStep("swap:before:early", (input: Released) => input);
 
 // Replacing a redkite step means keeping its half of the contract: everything
 // after build was written expecting a Built
 // @ts-expect-error
 defineStep("build", (input) => input);
+
+// The phase that moves the addresses is named for what it does, and the name it
+// used to have is not a point
+// @ts-expect-error
+defineStep("deploy:before:migrate", (input) => input);

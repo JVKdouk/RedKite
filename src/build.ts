@@ -36,8 +36,8 @@ export type BuildResult = {
   fingerprint: string;
   // Versioned name the image carries, which is what the next deploy recognises
   tag: string;
-  // The builder stage, kept only where a before-swap step has to run with the
-  // app's own toolchain
+  // The builder stage, kept only where a step has to run with the app's own
+  // toolchain
   builderTag?: string;
   // True when the host already held this exact image and nothing was rebuilt
   cached: boolean;
@@ -63,7 +63,7 @@ export async function build(
   const release = source.release;
   const fingerprint = fingerprintOf(spec, context, release);
   const tag = `${topology.container}:${release}-${fingerprint}`;
-  const builderTag = app.beforeSwap
+  const builderTag = app.keepBuilder
     ? `${topology.container}-builder:${release}-${fingerprint}`
     : undefined;
 
@@ -113,7 +113,7 @@ export async function build(
 
   if (builderTag) {
     // Every layer of this was just built, so it costs the export alone
-    detail("keeping the builder for the before-swap step");
+    detail("keeping the builder");
     await docker.image.build(
       { ...invocation, tags: [builderTag], target: BUILDER_STAGE },
       watch(detail, context.output),

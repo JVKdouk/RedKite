@@ -23,8 +23,9 @@ import { topologyFor, type AppTopology, type Topology } from "./topology.js";
 import type { AppSpec, Deployment, ServiceSpec } from "./types.js";
 
 // Blue-green, as the four steps redkite puts in the pipeline. The order is the
-// whole contract: bring the host up, build everything, run before-swap steps
-// while the old containers still serve, move addresses, check, revert or stop.
+// whole contract: bring the host up, build everything, move addresses, check,
+// revert or stop. Work that has to happen while the old containers still serve,
+// a migration among it, is a step at swap:before rather than anything here.
 //
 // Nothing here is privileged. Each of these is an ordinary step at an ordinary
 // point, and a deployment that registers its own at the same point replaces it.
@@ -55,8 +56,6 @@ export async function deploy(options: DeployOptions): Promise<Finished> {
     log,
   };
 
-  assertBeforeSwapReachable(options.config, options.environment);
-
   const steps = merge(supplied(options), options.config.steps ?? []);
   return await runPipeline(steps, setting);
 }
@@ -66,7 +65,7 @@ function supplied(options: DeployOptions): AnyStep[] {
   return [
     defineStep("setup", prepare),
     defineStep("build", (input, context) => compile(input, context, options.verbose ?? false)),
-    defineStep("deploy", (input, context) => release(input, context, options.health)),
+    defineStep("swap", (input, context) => release(input, context, options.health)),
     defineStep("cleanup", finish),
   ];
 }
@@ -101,16 +100,6 @@ async function release(
   health: DeployOptions["health"],
 ): Promise<Released> {
   const { docker, task, topology } = context;
-
-  // Runs in the image that was just built, against the database the old
-  // containers are still serving from. It throws, so nothing retires
-  for (const app of context.config.apps) {
-    if (!app.beforeSwap) continue;
-
-    task.detail(`${app.name}: ${app.beforeSwap.command.join(" ")}`);
-    await runBeforeSwap(app, built(input, app.name), docker);
-  }
-
   const apps = context.config.apps.map((app) => appOf(topology, app.name));
 
   task.detail("retiring the running containers");
@@ -150,15 +139,6 @@ async function finish(input: Released, context: Context): Promise<Finished> {
   return { ...input, removed: removed.flat(), reclaimed: reclaimed.flat() };
 }
 
-// A deployment may replace the build step, and a before-swap command has to run
-// in an image something actually produced
-function built(input: Built, name: string) {
-  const app = input.apps.find((item) => item.name === name);
-  if (app) return app;
-
-  throw new Error(`${name} has a before-swap step, but nothing built an image for it`);
-}
-
 function describe({ app, result }: Built0): BuiltApp {
   return {
     name: app.name,
@@ -190,23 +170,6 @@ async function checkAll(context: Context, health: DeployOptions["health"]) {
   );
 
   return !results.includes(false);
-}
-
-// The before-swap step runs on the deploy host, which is the bastion a config
-// written against the tunnelled pipeline names. Anything else has no route
-function assertBeforeSwapReachable(config: Deployment, environment: string) {
-  const bastion = config.environments?.[environment]?.host?.bastion;
-
-  for (const app of config.apps) {
-    const tunnel = app.beforeSwap?.tunnel;
-    if (!tunnel || tunnel.bastion === bastion) continue;
-
-    throw new Error(
-      `${app.name} tunnels its before-swap step through ${tunnel.bastion}, ` +
-        `but ${environment} deploys to ${bastion ?? "this machine"}. ` +
-        "The step runs on the deploy host, so they have to be the same",
-    );
-  }
 }
 
 async function ensureServices(context: Context) {
@@ -288,22 +251,6 @@ async function resolveFiles(app: AppSpec, stores: SecretStores) {
   return Object.fromEntries(entries);
 }
 
-// Host networking, because the deploy host is the one machine that can already
-// reach whatever the app's own environment file points at
-async function runBeforeSwap(app: AppSpec, image: BuiltApp, docker: Docker) {
-  const step = app.beforeSwap;
-  if (!step) return;
-
-  if (!image.builderTag) {
-    throw new Error(`${app.name} has a before-swap step but no builder image`);
-  }
-
-  await docker.runOrThrow(
-    ["run --rm --network host --workdir /app", image.builderTag, ...step.command].join(" "),
-    `${app.name} before-swap step failed`,
-  );
-}
-
 // Move the running container out of the way without stopping it, so it keeps
 // answering on the retired address while the new one starts
 async function retire(docker: Docker, topology: Topology, app: AppTopology) {
@@ -354,7 +301,7 @@ async function cleanup(docker: Docker, app: AppTopology) {
 }
 
 // Every version of this app's images except the one that was just released,
-// including the builder a before-swap step ran in
+// including the builder a step before the swap ran in
 async function reclaim(docker: Docker, app: BuiltApp) {
   const version = `${app.release}-${app.fingerprint}`;
   const reclaimed: string[] = [];

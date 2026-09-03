@@ -12,7 +12,7 @@ import type { Deployment } from "./types.js";
 
 // The phases a run walks, in the order it walks them. Each is a step redkite
 // supplies, and the name of the point that step sits at
-export const PHASES = ["setup", "build", "deploy", "cleanup"] as const;
+export const PHASES = ["setup", "build", "swap", "cleanup"] as const;
 export type Phase = (typeof PHASES)[number];
 
 // Everything before the phase's own step, the phase's own slot, everything after
@@ -49,7 +49,7 @@ export type BuiltApp = {
   fingerprint: string;
   // The host already held this image, and nothing was rebuilt
   cached: boolean;
-  // The image a before-swap step runs in, for an app that has one
+  // The image a step hung before the swap runs in, for an app that kept one
   builderTag?: string;
 };
 
@@ -89,14 +89,14 @@ export type Context = {
 type PhaseInput = {
   setup: Start;
   build: Prepared;
-  deploy: Built;
+  swap: Built;
   cleanup: Released;
 };
 
 type PhaseOutput = {
   setup: Prepared;
   build: Built;
-  deploy: Released;
+  swap: Released;
   cleanup: Finished;
 };
 
@@ -121,11 +121,21 @@ export type OutputAt<P extends Point> = P extends Phase
     ? PhaseInput[PhaseOf<P>]
     : PhaseOutput[PhaseOf<P>];
 
+// What a step can know before a run starts: nothing has happened yet, so this
+// is the config as written and the environment it was asked for
+export type Plan = {
+  config: Deployment;
+  environment: string;
+};
+
 // A property rather than a method, because a method's parameter is checked
 // bivariantly: declared as one, a step could narrow its input to a value the
 // slot it runs in has not produced yet
 export type Step<P extends Point = Point> = {
   point: P;
+  // Run before the first step, so a step that cannot possibly work says so
+  // while the host is still untouched rather than half way through a swap
+  check?: (plan: Plan) => void;
   run: (input: InputAt<P>, context: Context) => OutputAt<P> | Promise<OutputAt<P>>;
 };
 
@@ -133,6 +143,7 @@ export type Step<P extends Point = Point> = {
 // own input type, and `never` is what every one of them accepts
 export type AnyStep = {
   point: Point;
+  check?: (plan: Plan) => void;
   run: (input: never, context: Context) => unknown;
 };
 
@@ -162,11 +173,20 @@ export async function runPipeline(
   steps: AnyStep[],
   setting: Omit<Context, "task">,
 ): Promise<Finished> {
+  const ordered = sequence(steps);
+  const plan: Plan = { config: setting.config, environment: setting.environment };
+
+  // Every check before any step, so a run that is going to fail on a config
+  // mistake fails before it has created a network or built an image. Nothing
+  // wraps what a check throws: it is about the config, and the config is what
+  // the reader has in front of them
+  for (const step of ordered) step.check?.(plan);
+
   // Every step is handed what the one before it answered with, so the whole run
   // is a fold over one list. Running part of it at once is a change here alone
   let value: unknown = { environment: setting.environment } satisfies Start;
 
-  for (const step of sequence(steps)) {
+  for (const step of ordered) {
     const task = setting.log.step(step.point);
 
     // A step declares what it takes and answers with through its point, and a
@@ -216,9 +236,17 @@ export type Address = { phase: Phase; slot: Slot; name: string };
 // and cache keys beside it
 const NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+// Points a config may still be written against, and what they became
+const RENAMED: Record<string, Phase> = { deploy: "swap" };
+
 export function addressOf(point: string): Address {
   const parts = point.split(":");
   const phase = parts[0];
+
+  const renamed = phase ? RENAMED[phase] : undefined;
+  if (renamed) {
+    throw new Error(`${point} names the phase ${phase}, which is now ${renamed}`);
+  }
 
   if (!phase || !isPhase(phase)) {
     throw new Error(`${point} names no phase, expected one of ${PHASES.join(", ")}`);

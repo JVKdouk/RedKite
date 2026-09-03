@@ -23,7 +23,7 @@ export type DockerfileContext = {
 };
 
 // Named here because the build stops at this stage to keep an image a
-// before-swap step can run in, and two spellings of it would drift
+// step before the swap can run in, and two spellings of it would drift
 export const BUILDER_STAGE = "builder";
 
 export function renderDockerfile(

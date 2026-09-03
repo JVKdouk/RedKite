@@ -126,23 +126,6 @@ export type HealthSpec = {
   delayMs?: number;
 };
 
-export type BeforeSwapSpec = {
-  // Which step runs, "migrate" is the only one today
-  kind: "migrate";
-  // Command run in the builder image, as argv. Throws, so nothing retires and
-  // the old containers keep serving
-  command: string[];
-  // Written when the step reached its database through a forward. It runs on
-  // the deploy host now, which is the machine that bastion named, so nothing
-  // is forwarded and the deploy refuses a bastion that is anything else
-  tunnel?: {
-    bastion: string;
-    from: string;
-    alias: string;
-    port: number;
-  };
-};
-
 export type AppSpec = {
   // Identifies the app. Becomes its container name, cache keys, volume names
   // and nginx upstream, so changing it orphans everything named after it
@@ -166,9 +149,10 @@ export type AppSpec = {
   // Container path to the item whose contents land there, for credentials that
   // have to be a file rather than an environment variable
   files?: Record<string, SecretRef>;
-  // Runs after the image builds and before anything retires, so a failure
-  // leaves the running deployment untouched
-  beforeSwap?: BeforeSwapSpec;
+  // Keeps the builder stage as an image of its own. The runtime image holds
+  // only the output, so this is what a step running the app's own toolchain,
+  // a migration among them, has to run in
+  keepBuilder?: boolean;
 };
 
 export type Deployment = {

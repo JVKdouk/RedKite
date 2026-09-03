@@ -31,6 +31,16 @@ export default defineDeployment({
     },
   },
 
+  // Hung before the swap, so it runs while the old containers still serve. A
+  // failure here throws and nothing retires
+  steps: [
+    migrate({
+      app: "backend",
+      command: "yarn db:migrate",
+      tunnel: { bastion: "deploy@staging.acme.example", from: "DATABASE_URL" },
+    }),
+  ],
+
   services: [
     // Pinned while the running container still sits on the address it was
     // given by hand. Drop the pin once it has been recreated
@@ -76,10 +86,8 @@ export default defineDeployment({
         sourcemaps: sentry({ stripFromImage: "SENTRY_AUTH_TOKEN" }),
       }),
 
-      beforeSwap: migrate({
-        command: "yarn db:migrate",
-        tunnel: { bastion: "deploy@staging.acme.example", from: "DATABASE_URL" },
-      }),
+      // Kept because the migration below runs in it
+      keepBuilder: true,
 
       health: {
         path: "/health",

@@ -53,8 +53,11 @@ Everything a user writes stays put: the command is `redkite`, the config is
 | `build.ts` | Resolve, render, build, tag, and skip when held |
 | `docker.ts` | One snapshot, then network, image, container, builder |
 | `deploy.ts` | The four steps redkite puts in the pipeline |
-| `services/ensure.ts` | One primitive for redis and nginx |
+| `steps.ts` | Steps a config hangs around them, and the network they run on |
+| `services/index.ts` | `redis`, `postgres`, and the specs they answer with |
+| `services/ensure.ts` | One primitive for every service and for nginx |
 | `secrets/` | `bitwarden(id)` refs, merge order, the CLI as a process |
+| `cli/config.ts` | Discovery: the upward walk, `redkite.<env>.config.ts` |
 | `health.ts` | One loop, `expect` supplied per app |
 | `presets/` | `nextApp`, `nodeApp` |
 
@@ -85,7 +88,8 @@ without it, a changed environment file is answered with the image built from the
 old one.
 
 `test/pipeline.test.ts` asserts redkite's four steps are ordinary members of the
-list, and that a config replacing one takes its place.
+list, that a config replacing one takes its place, and that every step's `check`
+runs before the first step does.
 
 `test/points.check.ts` is not a test. It is a file that only compiles if the
 wrong step is impossible to write, so every `@ts-expect-error` in it fails the
@@ -114,6 +118,16 @@ which is why it takes a real run to notice.
 container that already exists, so a rendered config only lands when the
 container is created. Changing `maxBodySize` or adding an app writes an nginx
 configuration the running proxy never sees.
+
+**A step on the deployment network needs the aliases too.** Attaching the
+network alone is not enough: a service answers to the alias the apps know it by,
+which is an `--add-host`, not a network alias. `attachment("deployment", ...)`
+carries both, and that is the whole reason it exists rather than a flag.
+
+**A migration runs in the builder image, not the runtime one.** The runtime
+image holds only the output, so `migrate()` needs `keepBuilder: true` on the app
+it names. That is checked before the run starts, because finding out afterwards
+means finding out with the network up and the images built.
 
 **A deploy builds `origin/<branch>`, not your working tree.** Local commits that
 are not pushed are not deployed.

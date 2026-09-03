@@ -15,7 +15,7 @@ export type BuildInvocation = {
   tags: string[];
   // Secret id to a path on the host holding its contents
   secrets?: Record<string, string>;
-  // Stops at the builder stage, for the image a before-swap step runs in
+  // Stops at the builder stage, for the image a step before the swap runs in
   target?: string;
 };
 

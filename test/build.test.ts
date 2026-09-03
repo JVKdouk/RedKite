@@ -89,15 +89,17 @@ describe("build pipeline", () => {
     assert.match(buildCommand(host.commands), new RegExp(`-t ${result.tag} -t ${target.container}`));
   });
 
-  it("keeps a builder image only where a before-swap step needs one", async () => {
-    const back = await run(backend);
-    const front = await run(frontend);
+  // A second build of the same source, so nothing else pays for an image only
+  // a step running the app's own toolchain has any use for
+  it("keeps a builder image only where the app asks for one", async () => {
+    const kept = await run({ ...frontend, keepBuilder: true });
+    const plain = await run(frontend);
 
-    assert.ok(back.result.builderTag?.includes("-builder:"));
-    assert.ok(back.host.commands.some((c) => c.includes("--target builder")));
+    assert.ok(kept.result.builderTag?.includes("-builder:"));
+    assert.ok(kept.host.commands.some((c) => c.includes("--target builder")));
 
-    assert.equal(front.result.builderTag, undefined);
-    assert.ok(!front.host.commands.some((c) => c.includes("--target builder")));
+    assert.equal(plain.result.builderTag, undefined);
+    assert.ok(!plain.host.commands.some((c) => c.includes("--target builder")));
   });
 });
 

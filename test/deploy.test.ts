@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import config from "../examples/acme/redkite.config.js";
 import type { AppSpec, Deployment } from "../src/index.js";
-import { bitwarden, deploy, postgres, topologyFor } from "../src/index.js";
+import { bitwarden, deploy, migrate, postgres, topologyFor } from "../src/index.js";
 import { fakeHost } from "./fakes.js";
 
 const topology = topologyFor(config, "staging");
@@ -43,6 +43,26 @@ async function run(options: {
   });
 
   return { result, host };
+}
+
+// A config mistake has to be found before the run starts, so what is asserted
+// is the message and that the host is still untouched
+async function refuses(broken: Deployment, message: RegExp) {
+  const host = fakeHost();
+
+  await assert.rejects(
+    () =>
+      deploy({
+        config: broken,
+        environment: "staging",
+        host: host.host,
+        secrets,
+        health: { sleep: async () => {} },
+      }),
+    message,
+  );
+
+  return host;
 }
 
 describe("deploy", () => {
@@ -90,7 +110,7 @@ describe("deploy", () => {
     const migrated = host.commands.findIndex((c) => c.includes("yarn db:migrate"));
     const firstRetire = host.commands.findIndex((c) => c.startsWith("container rename"));
 
-    assert.ok(migrated >= 0, "the before-swap step ran");
+    assert.ok(migrated >= 0, "the step before the swap ran");
     assert.ok(migrated < firstRetire, "and it ran while the old containers still served");
   });
 
@@ -104,34 +124,70 @@ describe("deploy", () => {
     assert.match(migration, new RegExp(`${back.container}-builder:`));
   });
 
-  it("refuses a before-swap tunnel through anything but the deploy host", async () => {
-    const apps: AppSpec[] = (config.apps as AppSpec[]).map((app) =>
-      app.beforeSwap
-        ? {
-            ...app,
-            beforeSwap: {
-              ...app.beforeSwap,
-              tunnel: { bastion: "ubuntu@nowhere", from: "DATABASE_URL", alias: "database", port: 5432 },
-            },
-          }
-        : app,
-    );
-
-    const elsewhere: Deployment = { ...config, apps };
+  // A database this deployment runs is on the deployment network under an
+  // alias, and a migration on the host's own stack cannot resolve it
+  it("puts a migration on the deployment network when it is asked to", async () => {
+    const onNetwork: Deployment = {
+      ...config,
+      steps: [
+        migrate({ app: "backend", command: "yarn db:migrate", network: "deployment" }),
+      ],
+    };
 
     const host = fakeHost();
+    host.respond(front.container, HEALTHY[front.container]!);
+    host.respond(back.container, HEALTHY[back.container]!);
 
-    await assert.rejects(
-      () =>
-        deploy({
-          config: elsewhere,
-          environment: "staging",
-          host: host.host,
-          secrets,
-          health: { sleep: async () => {} },
+    await deploy({
+      config: onNetwork,
+      environment: "staging",
+      host: host.host,
+      secrets,
+      health: { sleep: async () => {} },
+    });
+
+    const migration = host.commands.find((command) => command.includes("yarn db:migrate"))!;
+
+    assert.match(migration, new RegExp(`^run --rm --network ${topology.network} `));
+    assert.ok(migration.includes(`--add-host redis:${topology.services[0]!.address}`));
+    assert.ok(!migration.includes("--network host"));
+  });
+
+  it("refuses a migration tunnelled through anything but the deploy host", async () => {
+    const elsewhere: Deployment = {
+      ...config,
+      steps: [
+        migrate({
+          app: "backend",
+          command: "yarn db:migrate",
+          tunnel: { bastion: "ubuntu@nowhere", from: "DATABASE_URL" },
         }),
-      /ubuntu@nowhere/,
-    );
+      ],
+    };
+
+    const host = await refuses(elsewhere, /ubuntu@nowhere/);
+    assert.deepEqual(host.commands, [], "and nothing on the host was touched");
+  });
+
+  // The builder is the only image holding the toolchain, and the app that keeps
+  // one is named by the app rather than by the step
+  it("refuses a migration in an app that did not keep its builder", async () => {
+    const apps: AppSpec[] = (config.apps as AppSpec[]).map((app) => {
+      const { keepBuilder: _, ...rest } = app;
+      return rest;
+    });
+
+    const host = await refuses({ ...config, apps }, /keepBuilder/);
+    assert.deepEqual(host.commands, [], "and nothing on the host was touched");
+  });
+
+  it("refuses a migration for an app nothing declares", async () => {
+    const missing: Deployment = {
+      ...config,
+      steps: [migrate({ app: "ghost", command: "yarn db:migrate" })],
+    };
+
+    await refuses(missing, /ghost names no app/);
   });
 
   it("reverts every app when one of them is unhealthy", async () => {
