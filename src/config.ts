@@ -1,5 +1,5 @@
 import { assertSteps } from "./pipeline.js";
-import type { Deployment } from "./types.js";
+import type { Deployment, Environment } from "./types.js";
 
 // Identity, but it pins the type so a missing health predicate fails to compile
 export function defineDeployment<const T extends Deployment>(config: T): T {
@@ -7,6 +7,12 @@ export function defineDeployment<const T extends Deployment>(config: T): T {
   assertRoutesResolvable(config);
   assertSteps(config.steps ?? []);
   return config;
+}
+
+// Identity, for an environment that lives in a file of its own. It pins the
+// type the same way defineDeployment does, so a missing subnet fails to compile
+export function defineEnvironment<const T extends Environment>(environment: T): T {
+  return environment;
 }
 
 function assertUniqueNames(config: Deployment) {

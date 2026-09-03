@@ -305,6 +305,8 @@ export class DockerBuilder {
   private readonly _volumes: string[] = [];
   private readonly _hosts: string[] = [];
   private readonly _ports: string[] = [];
+  private readonly _env: string[] = [];
+  private _envFile?: string;
 
   constructor(private readonly container: DockerContainer) {}
 
@@ -348,6 +350,18 @@ export class DockerBuilder {
     return this;
   }
 
+  env(name: string, value: string) {
+    this._env.push(`${name}=${value}`);
+    return this;
+  }
+
+  // A path on the host rather than the values themselves, so a password is
+  // never an argument in the process list or in the shell history
+  envFile(path: string) {
+    this._envFile = path;
+    return this;
+  }
+
   port(from: number, to: number) {
     this._ports.push(`${from}:${to}`);
     return this;
@@ -371,6 +385,8 @@ export class DockerBuilder {
       ...this._networks.map((network) => `--network ${network}`),
       ...this._ports.map((port) => `-p ${port}`),
       ...this._hosts.map((host) => `--add-host ${host}`),
+      ...(this._envFile ? [`--env-file ${this._envFile}`] : []),
+      ...this._env.map((entry) => `-e ${entry}`),
       ...(this._ip ? [`--ip ${this._ip}`] : []),
       ...(this._restart ? [`--restart ${this._restart}`] : []),
       this._image,

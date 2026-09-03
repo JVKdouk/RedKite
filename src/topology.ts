@@ -47,10 +47,10 @@ export type Topology = {
 };
 
 export function topologyFor(config: Deployment, environment: string): Topology {
-  const env = config.environments[environment];
+  const env = config.environments?.[environment];
 
   if (!env) {
-    const known = Object.keys(config.environments).join(", ");
+    const known = Object.keys(config.environments ?? {}).join(", ") || "none";
     throw new Error(`Unknown environment ${environment}, expected one of ${known}`);
   }
 
@@ -80,7 +80,7 @@ export function topologyFor(config: Deployment, environment: string): Topology {
     },
     apps,
     services,
-    extraHosts: extraHosts(apps, services),
+    extraHosts: extraHosts(apps, services, env.extraHosts),
   };
 }
 
@@ -143,7 +143,11 @@ function serviceTopology(
 }
 
 // Nginx resolves upstreams by container name, apps reach services by alias
-function extraHosts(apps: AppTopology[], services: ServiceTopology[]) {
+function extraHosts(
+  apps: AppTopology[],
+  services: ServiceTopology[],
+  declared: Record<string, string> = {},
+) {
   const hosts: Record<string, string> = {};
 
   for (const app of apps) {
@@ -153,6 +157,19 @@ function extraHosts(apps: AppTopology[], services: ServiceTopology[]) {
 
   for (const service of services) {
     if (service.alias) hosts[service.alias] = service.address;
+  }
+
+  // Declared last, but never over a derived one: a name that already resolves
+  // to a container in this deployment would send its traffic somewhere else,
+  // and the deploy would look like it worked
+  for (const [name, address] of Object.entries(declared)) {
+    if (name in hosts) {
+      throw new Error(
+        `extraHosts names ${name}, which this deployment already resolves to ${hosts[name]}`,
+      );
+    }
+
+    hosts[name] = address;
   }
 
   return hosts;

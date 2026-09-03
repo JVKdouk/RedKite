@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import config from "../examples/acme/redkite.config.js";
 import type { AppSpec, Deployment } from "../src/index.js";
-import { deploy, topologyFor } from "../src/index.js";
+import { bitwarden, deploy, postgres, topologyFor } from "../src/index.js";
 import { fakeHost } from "./fakes.js";
 
 const topology = topologyFor(config, "staging");
@@ -234,5 +234,56 @@ describe("deploy", () => {
     // But it must still reach the other app and the services
     assert.match(create, new RegExp(`--add-host ${front.container}:`));
     assert.match(create, new RegExp("--add-host redis:"));
+  });
+});
+
+// A service the image will not start without credentials for, so the config
+// carries a pointer and the deploy resolves it
+describe("a service with secrets", () => {
+  const withPostgres: Deployment = {
+    ...config,
+    services: [...config.services, postgres({ secrets: bitwarden("pg"), environment: { POSTGRES_DB: "acme" } })],
+  };
+
+  async function run() {
+    const host = fakeHost();
+
+    for (const [container, body] of Object.entries(HEALTHY)) host.respond(container, body);
+
+    await deploy({
+      config: withPostgres,
+      environment: "staging",
+      host: host.host,
+      secrets: { bitwarden: { read: async () => "POSTGRES_PASSWORD=hunter2\n" } },
+      health: { sleep: async () => {} },
+    });
+
+    return host;
+  }
+
+  it("hands the credentials over as a file rather than an argument", async () => {
+    const host = await run();
+    const create = host.commands.find((c) => c.includes("--name acme-staging-postgres"))!;
+
+    assert.match(create, /--env-file \/tmp\/redkite\/services\/acme-staging-postgres\/env/);
+    assert.doesNotMatch(create, /hunter2/);
+    assert.equal(
+      host.files.get("services/acme-staging-postgres/env"),
+      "POSTGRES_PASSWORD=hunter2\n",
+    );
+  });
+
+  it("passes the settings that are not credentials as plain variables", async () => {
+    const host = await run();
+    const create = host.commands.find((c) => c.includes("--name acme-staging-postgres"))!;
+
+    assert.match(create, /-e POSTGRES_DB=acme/);
+  });
+
+  it("names the volume the image would otherwise leave anonymous", async () => {
+    const host = await run();
+    const create = host.commands.find((c) => c.includes("--name acme-staging-postgres"))!;
+
+    assert.match(create, /-v acme-staging-postgres-data:\/var\/lib\/postgresql\/data/);
   });
 });

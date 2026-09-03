@@ -156,3 +156,46 @@ describe("topology", () => {
     assert.throws(() => defineDeployment(clashing), /Duplicate name/);
   });
 });
+
+// A database or a legacy service the apps must resolve, whose address is what
+// differs between environments
+describe("extra hosts a deployment declares", () => {
+  const withHosts = (extraHosts: Record<string, string>) =>
+    topologyFor(
+      {
+        ...config,
+        environments: {
+          staging: { ...config.environments!.staging!, extraHosts },
+        },
+      },
+      "staging",
+    );
+
+  it("resolves beside the ones the topology derives", () => {
+    const topology = withHosts({ "db.internal": "10.9.9.9" });
+
+    assert.equal(topology.extraHosts["db.internal"], "10.9.9.9");
+    assert.equal(
+      topology.extraHosts["acme-staging-frontend"],
+      TODAY.frontCurrentAddress,
+    );
+  });
+
+  // A name that already resolves to a container in this deployment would send
+  // its traffic somewhere else, and the deploy would look like it worked
+  it("refuses a name the deployment already resolves", () => {
+    assert.throws(
+      () => withHosts({ "acme-staging-backend": "10.9.9.9" }),
+      /already resolves to/,
+    );
+
+    assert.throws(() => withHosts({ redis: "10.9.9.9" }), /already resolves to/);
+  });
+
+  it("changes nothing when none are declared", () => {
+    assert.deepEqual(
+      topologyFor(config, "staging").extraHosts,
+      withHosts({}).extraHosts,
+    );
+  });
+});

@@ -11,9 +11,13 @@ export type Environment = {
   subnet: string;
   // Port published on the host, the only port a person outside ever types
   publicPort: number;
-  // The machine the containers run on. Its docker socket is forwarded here for
-  // the duration of a deploy, which is what makes the swap remote
+  // The machine the containers run on, and which builds the images. Absent
+  // means this one
   host?: DeployHost;
+  // Hostname to address, added to every container beside the ones the topology
+  // derives. For a database or a legacy service that has no DNS the apps can
+  // use, and whose address is what differs between environments
+  extraHosts?: Record<string, string>;
 };
 
 export type DeployHost = {
@@ -46,6 +50,12 @@ export type ServiceSpec = {
   restart?: "always" | "unless-stopped";
   // Container path to the file contents baked into the image at build time
   files?: Record<string, string>;
+  // Settings the image reads on start. These are baked into the container, so
+  // a credential belongs in secrets rather than here
+  environment?: Record<string, string>;
+  // Resolved at deploy time and handed over as an env file, so a password
+  // reaches the container without being written down in this repository
+  secrets?: SecretRefs;
   // Pins the last octet, for a service already running at an address it was
   // given by hand. Drop the pin once the container has been recreated
   address?: number;
@@ -166,8 +176,9 @@ export type Deployment = {
   // objects from another's on a shared host
   project: string;
   // Selected on the command line. The key is threaded into every derived name,
-  // so there is exactly one place the environment can be wrong
-  environments: Record<string, Environment>;
+  // so there is exactly one place the environment can be wrong. Optional
+  // because an environment may live in redkite.<name>.config.ts instead
+  environments?: Record<string, Environment>;
   // Largest request body the proxy accepts before answering 413
   maxBodySize?: string;
   // Image the derived proxy runs, pinned rather than floating

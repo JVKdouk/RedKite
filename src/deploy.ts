@@ -195,7 +195,7 @@ async function checkAll(context: Context, health: DeployOptions["health"]) {
 // The before-swap step runs on the deploy host, which is the bastion a config
 // written against the tunnelled pipeline names. Anything else has no route
 function assertBeforeSwapReachable(config: Deployment, environment: string) {
-  const bastion = config.environments[environment]?.host?.bastion;
+  const bastion = config.environments?.[environment]?.host?.bastion;
 
   for (const app of config.apps) {
     const tunnel = app.beforeSwap?.tunnel;
@@ -246,7 +246,7 @@ type Built0 = { app: AppSpec; result: BuildResult };
 
 async function buildAll(context: Context, verbose: boolean): Promise<Built0[]> {
   const { config, log, topology } = context;
-  const environment = config.environments[context.environment];
+  const environment = config.environments?.[context.environment];
 
   if (!environment) throw new Error(`Unknown environment ${context.environment}`);
 

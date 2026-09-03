@@ -149,6 +149,58 @@ Selected on the command line and threaded into every derived name.
 | `subnet` | First three octets. Redkite allocates the fourth |
 | `publicPort` | The only port anybody outside ever types |
 | `host.bastion` | `user@address` of the deploy host. Absent means this machine |
+| `extraHosts` | Hostname to address, added to every container beside the derived ones |
+
+`extraHosts` is for something the apps must resolve that redkite does not run:
+a managed database, a legacy service, anything whose address is the thing that
+differs between staging and production.
+
+```ts
+extraHosts: { "db.internal": "10.55.0.250" },
+```
+
+A name the deployment already resolves, an app's container or a service alias,
+is refused rather than silently overridden. Redirecting one of those would send
+its traffic somewhere else and the deploy would still look like it worked.
+
+### Environments in files of their own
+
+An environment can live beside the deployment instead of inside it, one file per
+environment, named `redkite.<environment>.config.ts`:
+
+```ts
+// redkite.production.config.ts
+import { defineEnvironment } from "redkite-cd";
+
+export default defineEnvironment({
+  branch: "main",
+  subnet: "10.55.0",
+  publicPort: 80,
+  host: { bastion: "deploy@acme.example" },
+});
+```
+
+Redkite finds them by name, so there is no list to keep in step. Drop the
+`environments` key from `redkite.config.ts` entirely, or keep some there and put
+others in files. Defining the same environment in both places is refused, since
+nothing could say which one wins.
+
+### Where the files live
+
+By default `redkite.config.ts` sits at the root of the project, and a deploy run
+from anywhere inside walks up to find it. A repository that would rather keep
+them together says so in `package.json`:
+
+```json
+{
+  "redkite": { "directory": "deploy" }
+}
+```
+
+Then `deploy/redkite.config.ts` and `deploy/redkite.production.config.ts`. If
+that directory holds no config, redkite stops and says so rather than carrying
+on up the tree: naming a directory and not putting the files there is a mistake,
+not a hint.
 
 ### Apps
 
@@ -193,8 +245,18 @@ that. The proxy is not one of them: apps carry routes, routes imply exactly one
 proxy, so it is derived rather than listed.
 
 ```ts
-services: [redis({ address: 26, volumes: { data: "/data" } })];
+services: [
+  redis({ address: 26, volumes: { data: "/data" } }),
+  postgres({ secrets: bitwarden("..."), environment: { POSTGRES_DB: "acme" } }),
+];
 ```
+
+`postgres` requires `secrets` because the image will not start without
+`POSTGRES_PASSWORD`, and a service that cannot come up is not a useful default.
+Whatever the ref resolves to is written to a file on the deploy host and handed
+over with `--env-file`, so the password is never an argument in a command line
+or a shell history. Settings that are not credentials, `POSTGRES_DB` and
+`POSTGRES_USER`, go in `environment` instead.
 
 ### Secrets
 

@@ -235,11 +235,17 @@ async function hostFor(host: DeployHost | undefined, log: Log) {
 // Only the stores the config actually names. A deployment that keeps its
 // environment somewhere else, or nowhere, needs no credentials to deploy
 async function openStores(config: Deployment, log: Log): Promise<SecretStores> {
-  const providers = new Set(
-    config.apps
-      .flatMap((app) => [...listRefs(app.secrets), ...Object.values(app.files ?? {})])
-      .map((ref) => ref.provider),
-  );
+  // Services name refs too, and a deployment whose only secret is a database
+  // password opened no store at all until this counted them
+  const refs = [
+    ...config.apps.flatMap((app) => [
+      ...listRefs(app.secrets),
+      ...Object.values(app.files ?? {}),
+    ]),
+    ...config.services.flatMap((service) => listRefs(service.secrets)),
+  ];
+
+  const providers = new Set(refs.map((ref) => ref.provider));
 
   if (!providers.has("bitwarden")) return {};
 
@@ -282,7 +288,7 @@ async function run(
 
   // Fail on a missing environment before opening anything for it
   const topology = topologyFor(config, environment);
-  const deployHost = config.environments[environment]?.host;
+  const deployHost = config.environments?.[environment]?.host;
 
   // The host clones the repositories over this, so it has to exist before the
   // connection that forwards it is opened
