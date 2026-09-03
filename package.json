@@ -1,0 +1,64 @@
+{
+  "name": "redkite-cd",
+  "version": "0.1.1",
+  "description": "Blue-green Docker deployment from one config file, over ssh. No engine, no agent, no dependencies.",
+  "keywords": [
+    "deploy",
+    "deployment",
+    "blue-green",
+    "zero-downtime",
+    "docker",
+    "buildkit",
+    "nginx",
+    "ssh",
+    "ci",
+    "cd"
+  ],
+  "license": "MIT",
+  "author": "Joao Kdouk <contato@kdouk.com>",
+  "homepage": "https://github.com/JVKdouk/RedKite#readme",
+  "repository": {
+    "url": "git+https://github.com/JVKdouk/RedKite",
+    "type": "git"
+  },
+  "bugs": {
+    "url": "https://github.com/JVKdouk/RedKite/issues"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "redkite": "./bin/redkite.mjs"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc --project tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "bench": "tsx bench/index.ts",
+    "plan": "node bin/redkite.mjs plan --config examples/acme/redkite.config.ts",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run check && npm test && node scripts/verifyRelease.mjs"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "5.9.3"
+  }
+}

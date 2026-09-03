@@ -1,0 +1,25 @@
+import { defineDeployment, nodeApp } from "../../../src/index.js";
+
+export default defineDeployment({
+  project: "fixture",
+  environments: {
+    staging: { branch: "staging", subnet: "10.0.0", publicPort: 80 },
+  },
+    services: [],
+  apps: [
+    {
+      name: "app",
+      repo: "git@example.com:app.git",
+      route: "/",
+      port: 3000,
+      build: nodeApp({
+        builder: "22-alpine",
+        runtime: "22-alpine",
+        steps: ["yarn build"],
+        output: "/app/dist",
+        entrypoint: ["node", "/app/index.js"],
+      }),
+      health: { path: "/health", expect: (body) => body.status === "ok" },
+    },
+  ],
+});

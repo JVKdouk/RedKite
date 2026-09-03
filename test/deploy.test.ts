@@ -1,0 +1,238 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
+import config from "../examples/acme/redkite.config.js";
+import type { AppSpec, Deployment } from "../src/index.js";
+import { deploy, topologyFor } from "../src/index.js";
+import { fakeHost } from "./fakes.js";
+
+const topology = topologyFor(config, "staging");
+const front = topology.apps.find((app) => app.name === "frontend")!;
+const back = topology.apps.find((app) => app.name === "backend")!;
+
+const HEALTHY = {
+  [front.container]: '{"status":"ok"}',
+  [back.container]: '{"status":"up","redis":"up","database":"up"}',
+};
+
+const secrets = {
+  bitwarden: {
+    read: async (id: string) =>
+      id === "4e69cf19-d708-4e65-b00b-b43a014ecd89"
+        ? "{}"
+        : "DATABASE_URL=postgres://user:pw@db.internal:5432/app\n",
+  },
+};
+
+async function run(options: {
+  existing?: string[];
+  bodies?: Record<string, string>;
+} = {}) {
+  const host = fakeHost({ existing: options.existing });
+
+  for (const [container, body] of Object.entries(options.bodies ?? HEALTHY)) {
+    host.respond(container, body);
+  }
+
+  const result = await deploy({
+    config,
+    environment: "staging",
+    host: host.host,
+    secrets,
+    health: { sleep: async () => {} },
+  });
+
+  return { result, host };
+}
+
+describe("deploy", () => {
+  it("reports success when every app answers healthily", async () => {
+    const { result } = await run();
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.released.sort(), [back.container, front.container].sort());
+    assert.deepEqual(result.reverted, []);
+  });
+
+  it("creates the network from the derived cidr", async () => {
+    const { host } = await run();
+
+    assert.ok(
+      host.commands.includes(`network create ${topology.network} --subnet=${topology.cidr}`),
+    );
+  });
+
+  it("swaps in the only order that keeps a container answering", async () => {
+    const { host } = await run({ existing: [back.container] });
+    // Only commands where the backend is the subject, not ones that merely
+    // name it in an --add-host
+    const steps = host.commands.filter(
+      (command) =>
+        command === `network connect --ip ${back.retiredAddress} ${topology.network} ${back.container}` ||
+        command === `container rename ${back.container} ${back.retired}` ||
+        command === `container start ${back.container}` ||
+        command.startsWith(`container create --name ${back.container} `),
+    );
+
+    assert.deepEqual(steps, [
+      // The old container moves aside without stopping, still serving
+      `network connect --ip ${back.retiredAddress} ${topology.network} ${back.container}`,
+      `container rename ${back.container} ${back.retired}`,
+      // Only then does the name and the live address belong to the new one
+      `container create --name ${back.container} --hostname ${back.container} -v ${back.volumes[0]!.volume}:/app/logs --network ${topology.network} --add-host ${front.container}:${front.currentAddress} --add-host ${front.retired}:${front.retiredAddress} --add-host redis:${topology.services[0]!.address} --ip ${back.currentAddress} --restart unless-stopped ${back.container}`,
+      `container start ${back.container}`,
+    ]);
+  });
+
+  it("migrates before anything is retired", async () => {
+    const { host } = await run({ existing: [back.container] });
+
+    const migrated = host.commands.findIndex((c) => c.includes("yarn db:migrate"));
+    const firstRetire = host.commands.findIndex((c) => c.startsWith("container rename"));
+
+    assert.ok(migrated >= 0, "the before-swap step ran");
+    assert.ok(migrated < firstRetire, "and it ran while the old containers still served");
+  });
+
+  // The deploy host is the bastion the tunnelled pipeline forwarded through, so
+  // the step reaches the database the same way the host itself does
+  it("runs the migration in the builder image, on the host's own network", async () => {
+    const { host } = await run({ existing: [back.container] });
+    const migration = host.commands.find((c) => c.includes("yarn db:migrate"))!;
+
+    assert.match(migration, /^run --rm --network host --workdir \/app /);
+    assert.match(migration, new RegExp(`${back.container}-builder:`));
+  });
+
+  it("refuses a before-swap tunnel through anything but the deploy host", async () => {
+    const apps: AppSpec[] = (config.apps as AppSpec[]).map((app) =>
+      app.beforeSwap
+        ? {
+            ...app,
+            beforeSwap: {
+              ...app.beforeSwap,
+              tunnel: { bastion: "ubuntu@nowhere", from: "DATABASE_URL", alias: "database", port: 5432 },
+            },
+          }
+        : app,
+    );
+
+    const elsewhere: Deployment = { ...config, apps };
+
+    const host = fakeHost();
+
+    await assert.rejects(
+      () =>
+        deploy({
+          config: elsewhere,
+          environment: "staging",
+          host: host.host,
+          secrets,
+          health: { sleep: async () => {} },
+        }),
+      /ubuntu@nowhere/,
+    );
+  });
+
+  it("reverts every app when one of them is unhealthy", async () => {
+    const { result, host } = await run({
+      existing: [front.container, back.container],
+      bodies: { ...HEALTHY, [back.container]: '{"status":"up","redis":"down","database":"up"}' },
+    });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.released, []);
+    assert.deepEqual(result.reverted.sort(), [back.container, front.container].sort());
+
+    // The healthy app is put back too, a half-swapped deployment is the one
+    // state nothing downstream can reason about
+    for (const app of [front, back]) {
+      assert.ok(host.commands.includes(`container rename ${app.container} ${app.failed}`));
+      assert.ok(host.commands.includes(`container rename ${app.retired} ${app.container}`));
+      assert.ok(
+        host.commands.includes(
+          `network connect --ip ${app.currentAddress} ${topology.network} ${app.retired}`,
+        ),
+      );
+      assert.ok(host.commands.includes(`container start ${app.container}`));
+    }
+  });
+
+  it("removes the retired container after success", async () => {
+    const { host } = await run({ existing: [back.container] });
+
+    assert.ok(host.commands.includes(`container rm ${back.retired}`));
+  });
+
+  it("does not try to remove a failed container that never existed", async () => {
+    const { host } = await run({ existing: [back.container] });
+
+    // Cleanup checks before it removes, so a first deploy is not full of
+    // errors about objects that were never created
+    assert.ok(!host.commands.includes(`container rm ${back.failed}`));
+  });
+
+  it("leaves nothing to clean up when it reverted", async () => {
+    const { host } = await run({
+      existing: [front.container, back.container],
+      bodies: { ...HEALTHY, [front.container]: '{"status":"starting"}' },
+    });
+
+    const removedLive = host.commands.filter(
+      (command) => command === `container rm ${front.retired}`,
+    );
+
+    // The retired container is now the live one, removing it would end the deploy
+    assert.equal(removedLive.length, 0);
+  });
+
+  it("brings up services once and reuses them on the next deploy", async () => {
+    const redis = topology.services.find((service) => service.name === "redis")!;
+    const first = await run();
+
+    assert.ok(first.host.commands.some((c) => c.includes(`--name ${redis.container}`)));
+
+    const second = await run({ existing: [redis.container] });
+    const created = second.host.commands.filter((c) =>
+      c.includes(`--name ${redis.container}`),
+    );
+
+    assert.deepEqual(created, []);
+  });
+
+  // The proxy is derived from the app list rather than listed beside redis,
+  // so a deployment cannot be written that routes to apps without one
+  it("publishes only the derived proxy, with every host it must resolve", async () => {
+    const { host } = await run();
+    const creates = host.commands.filter((c) => c.startsWith("container create"));
+    const published = creates.filter((c) => c.includes("-p "));
+
+    assert.equal(published.length, 1);
+    assert.ok(published[0]!.includes(`--name ${topology.router.container}`));
+    assert.match(published[0]!, new RegExp(`-p ${topology.publicPort}:3000`));
+
+    for (const [name, ip] of Object.entries(topology.extraHosts)) {
+      assert.match(published[0]!, new RegExp(`--add-host ${name}:${ip}`));
+    }
+  });
+
+  it("gives a service the volume its image would otherwise leave anonymous", async () => {
+    const redis = topology.services.find((service) => service.name === "redis")!;
+    const { host } = await run();
+    const create = host.commands.find((c) => c.includes(`--name ${redis.container}`))!;
+
+    assert.equal(redis.volumes.length, 1);
+    assert.match(create, new RegExp(`-v ${redis.container}-data:/data`));
+  });
+
+  it("never lets an app resolve its own name to the live address", async () => {
+    const { host } = await run();
+    const create = host.commands.find((c) => c.includes(`--name ${back.container} `))!;
+
+    assert.doesNotMatch(create, new RegExp(`--add-host ${back.container}:`));
+    assert.doesNotMatch(create, new RegExp(`--add-host ${back.retired}:`));
+    // But it must still reach the other app and the services
+    assert.match(create, new RegExp(`--add-host ${front.container}:`));
+    assert.match(create, new RegExp("--add-host redis:"));
+  });
+});
