@@ -178,14 +178,14 @@ describe("what a step checks before the run", () => {
     const broken: AnyStep = {
       point: "swap:before:migrate",
       check: () => {
-        throw new Error("backend needs keepBuilder: true");
+        throw new Error("backend names no app in this deployment");
       },
       run: (input) => input,
     };
 
     await assert.rejects(
       () => runPipeline(merge(supplied(trace), [broken]), setting()),
-      /keepBuilder/,
+      /names no app/,
     );
 
     assert.deepEqual(trace, []);

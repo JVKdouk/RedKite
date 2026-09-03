@@ -211,6 +211,7 @@ not a hint.
 | `route` | The nginx location. `/` is the catch-all; `/api/` has its prefix stripped |
 | `port` | The port the app listens on inside its container |
 | `build` | How the repository becomes an image. See presets below |
+| `dir` | Where the app sits in the repository, when it is not the whole of it |
 | `health` | Probed on the container itself, not through the proxy |
 | `secrets` | One ref or several, merged in order, written to `.env` in the image |
 | `files` | Container path to the item whose contents land there |
@@ -237,6 +238,34 @@ The dependency install is not one of the `steps`. The preset copies
 `package.json` and `yarn.lock` ahead of the source and installs against those
 alone, so a commit that changes only source code reuses the layer. That is the
 difference between a deploy and a cold build.
+
+`nextApp` takes `standalone`, which says whether `next.config` sets
+`output: "standalone"`. It defaults to `true`. A standalone build ships the
+tree Next produced and runs it on node alone; without it the whole repository
+ships and `next start` resolves its own dependencies, which is a much larger
+image.
+
+```ts
+nextApp({ standalone: false })
+```
+
+### An app in a directory of its own
+
+A repository holding several apps names each one's directory:
+
+```ts
+{ name: "web", dir: "apps/web", build: nextApp(), /* ... */ }
+```
+
+The whole repository is copied into the image, and `dir` is where the build
+steps and the shipped command run. Every `/app` path the build spec names is
+read against it, so a preset needs no change: `output: "/app/dist"` becomes
+`/app/apps/web/dist`.
+
+**The dependency install stays at the repository root.** A workspace resolves
+one lockfile for every package in it, so the install has to see all of them,
+and `node_modules` is where that put it. An app with its own lockfile in a
+subdirectory is not covered by `dir` alone.
 
 ### Services
 
@@ -352,23 +381,17 @@ the old containers are still serving, and throws before anything retires.
 import { migrate } from "redkite-cd";
 
 export default defineDeployment({
-  apps: [
-    {
-      name: "backend",
-      // The runtime image holds only the output, so the toolchain the migration
-      // needs is kept as an image of its own
-      keepBuilder: true,
-      // ...
-    },
-  ],
-
   steps: [migrate({ app: "backend", command: "yarn db:migrate" })],
 });
 ```
 
-An app that migrates without `keepBuilder`, or a step naming an app the
-deployment does not have, fails before the run starts rather than half way
-through it.
+The runtime image holds only what the app compiled to, so the command runs in
+the builder stage instead. Every app keeps that stage as an image of its own,
+which costs the export of layers the runtime build produced anyway and means
+there is nothing to set before a step can use it.
+
+A step naming an app the deployment does not have fails before the run starts
+rather than half way through it.
 
 #### The network a step runs on
 

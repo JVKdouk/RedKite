@@ -3,11 +3,26 @@
 // drift waiting to happen.
 
 // The yarn cache is global, everything else is a path inside the project
-export function mountFor(name: string) {
+export function mountFor(name: string, dir?: string) {
   if (name === "yarn") return "/root/.yarn";
+  // Where the dependency layer installed it. That layer runs at the repository
+  // root, which is also where a workspace hoists node_modules to
   if (name === "modules") return "/app/node_modules";
-  if (name === "next-app") return "/app/.next/cache";
-  return `/app/.cache/${name}`;
+  if (name === "next-app") return rootedAt("/app/.next/cache", dir);
+  return rootedAt(`/app/.cache/${name}`, dir);
+}
+
+// Where the app itself sits. The whole repository is copied to /app, and dir is
+// the app's own place in it
+export function appRoot(dir?: string) {
+  return dir ? `/app/${dir}` : "/app";
+}
+
+// A path under /app belongs to the app, so it moves with it. Bare /app is the
+// repository itself and stays: that is what a build shipping its whole tree copies
+export function rootedAt(path: string, dir?: string) {
+  if (!dir || !path.startsWith("/app/")) return path;
+  return `${appRoot(dir)}/${path.slice("/app/".length)}`;
 }
 
 // A directory inside the output root moves with it, because the output becomes

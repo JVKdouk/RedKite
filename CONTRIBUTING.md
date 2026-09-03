@@ -59,7 +59,8 @@ Everything a user writes stays put: the command is `redkite`, the config is
 | `secrets/` | `bitwarden(id)` refs, merge order, the CLI as a process |
 | `cli/config.ts` | Discovery: the upward walk, `redkite.<env>.config.ts` |
 | `health.ts` | One loop, `expect` supplied per app |
-| `presets/` | `nextApp`, `nodeApp` |
+| `presets/` | `nextApp`, `nodeApp`, and the two Next output layouts |
+| `layout.ts` | Where a cache mounts, and where `dir` moves a path to |
 
 Everything above takes a `Host`, so the whole orchestration is exercised against
 a recorder. Only `sshHost` and `localHost` touch a real machine, and they are
@@ -124,10 +125,20 @@ network alone is not enough: a service answers to the alias the apps know it by,
 which is an `--add-host`, not a network alias. `attachment("deployment", ...)`
 carries both, and that is the whole reason it exists rather than a flag.
 
+**A cache mount is not in the image.** `node_modules` is a cache mount, so a
+runtime that resolves its own dependencies finds the directory empty. That is
+why `nextApp({ standalone: false })` drops the modules cache: the install has to
+land in a layer.
+
+**`dir` moves the app, not the install.** Build steps and the shipped command
+run in `/app/<dir>`, and every `/app` path in a build spec is read against it.
+The dependency layer stays at the repository root, where a workspace lockfile
+resolves every package at once.
+
 **A migration runs in the builder image, not the runtime one.** The runtime
-image holds only the output, so `migrate()` needs `keepBuilder: true` on the app
-it names. That is checked before the run starts, because finding out afterwards
-means finding out with the network up and the images built.
+image holds only what the app compiled to, so every build keeps its builder
+stage as a second tag. It is unconditional on purpose: a flag that has to be set
+before a step can run is a flag that will be missing.
 
 **A deploy builds `origin/<branch>`, not your working tree.** Local commits that
 are not pushed are not deployed.

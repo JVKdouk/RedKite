@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import config from "../examples/acme/redkite.config.js";
-import type { AppSpec, Deployment } from "../src/index.js";
+import type { Deployment } from "../src/index.js";
 import { bitwarden, deploy, migrate, postgres, topologyFor } from "../src/index.js";
 import { fakeHost } from "./fakes.js";
 
@@ -169,16 +169,18 @@ describe("deploy", () => {
     assert.deepEqual(host.commands, [], "and nothing on the host was touched");
   });
 
-  // The builder is the only image holding the toolchain, and the app that keeps
-  // one is named by the app rather than by the step
-  it("refuses a migration in an app that did not keep its builder", async () => {
-    const apps: AppSpec[] = (config.apps as AppSpec[]).map((app) => {
-      const { keepBuilder: _, ...rest } = app;
-      return rest;
-    });
+  // Nothing in a config says an app needs a builder. Every app keeps one, so a
+  // step can be hung anywhere without a second place having to agree
+  it("keeps a builder for every app", async () => {
+    const { host } = await run();
+    const built = host.commands.filter((command: string) =>
+      command.includes("--target builder"),
+    );
 
-    const host = await refuses({ ...config, apps }, /keepBuilder/);
-    assert.deepEqual(host.commands, [], "and nothing on the host was touched");
+    assert.deepEqual(
+      built.map((command) => command.match(/-t (\S+-builder):/)?.[1]).sort(),
+      [`${back.container}-builder`, `${front.container}-builder`].sort(),
+    );
   });
 
   it("refuses a migration for an app nothing declares", async () => {

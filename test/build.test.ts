@@ -89,17 +89,13 @@ describe("build pipeline", () => {
     assert.match(buildCommand(host.commands), new RegExp(`-t ${result.tag} -t ${target.container}`));
   });
 
-  // A second build of the same source, so nothing else pays for an image only
-  // a step running the app's own toolchain has any use for
-  it("keeps a builder image only where the app asks for one", async () => {
-    const kept = await run({ ...frontend, keepBuilder: true });
-    const plain = await run(frontend);
+  // A second build of the same source, exporting layers the first one already
+  // produced. Nothing has to ask for it, so no step can find it missing
+  it("keeps the builder as an image of its own", async () => {
+    const { result, host } = await run(frontend);
 
-    assert.ok(kept.result.builderTag?.includes("-builder:"));
-    assert.ok(kept.host.commands.some((c) => c.includes("--target builder")));
-
-    assert.equal(plain.result.builderTag, undefined);
-    assert.ok(!plain.host.commands.some((c) => c.includes("--target builder")));
+    assert.ok(result.builderTag.includes("-builder:"));
+    assert.ok(host.commands.some((c) => c.includes("--target builder")));
   });
 });
 
@@ -178,6 +174,15 @@ describe("what the image is tagged by", () => {
     });
 
     assert.notEqual(before, after);
+  });
+
+  // dir renders a different Dockerfile without touching the build spec, so
+  // without this the host answers with the image built from the old layout
+  it("changes when the app moves inside the repository", async () => {
+    assert.notEqual(
+      await fingerprintOf(backend),
+      await fingerprintOf({ ...backend, dir: "apps/api" }),
+    );
   });
 
   it("changes when the environment file changes", async () => {

@@ -140,6 +140,10 @@ export type AppSpec = {
   // Environment for the app. Several are merged in the order written, so a
   // shared ref can come first and a per-app one override it
   secrets?: SecretRefs;
+  // Where the app sits in the repository, for a monorepo whose root is not it.
+  // Build steps and the shipped command run there. The dependency install does
+  // not: a workspace lockfile is resolved at the root for every package at once
+  dir?: string;
   // How the repository becomes a runnable image
   build: BuildSpec;
   // What has to be true before traffic is allowed to move to the new container
@@ -149,10 +153,6 @@ export type AppSpec = {
   // Container path to the item whose contents land there, for credentials that
   // have to be a file rather than an environment variable
   files?: Record<string, SecretRef>;
-  // Keeps the builder stage as an image of its own. The runtime image holds
-  // only the output, so this is what a step running the app's own toolchain,
-  // a migration among them, has to run in
-  keepBuilder?: boolean;
 };
 
 export type Deployment = {

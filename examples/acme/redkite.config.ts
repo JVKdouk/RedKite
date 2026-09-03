@@ -86,9 +86,6 @@ export default defineDeployment({
         sourcemaps: sentry({ stripFromImage: "SENTRY_AUTH_TOKEN" }),
       }),
 
-      // Kept because the migration below runs in it
-      keepBuilder: true,
-
       health: {
         path: "/health",
         expect: (body) =>

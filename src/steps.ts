@@ -26,8 +26,8 @@ export function attachment(network: StepNetwork, topology: Topology): string[] {
 }
 
 type MigrateOptions = {
-  // The app whose image the command runs in. It has to keep its builder, since
-  // that is the only image holding the toolchain a migration needs
+  // The app whose builder image the command runs in. Every app keeps one, so
+  // there is nothing else a config has to set for this to work
   app: string;
   command: string;
   // Defaults to the deploy host's own stack, which is the machine that can
@@ -74,12 +74,6 @@ export function migrate(options: MigrateOptions): Step<`swap:before:${string}`> 
 function assertReachable(plan: Plan, options: MigrateOptions) {
   const app = plan.config.apps.find((item) => item.name === options.app);
   if (!app) throw new Error(`${options.app} names no app in this deployment`);
-
-  if (!app.keepBuilder) {
-    throw new Error(
-      `${options.app} migrates in its builder image, so it needs keepBuilder: true`,
-    );
-  }
 
   const bastion = plan.config.environments?.[plan.environment]?.host?.bastion;
   const tunnel = options.tunnel;

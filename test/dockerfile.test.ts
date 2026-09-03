@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import config from "../examples/acme/redkite.config.js";
-import { renderDockerfile, topologyFor } from "../src/index.js";
+import { nextApp, renderDockerfile, topologyFor } from "../src/index.js";
 
 // The Dockerfile is the pipeline, and the layer order is the part worth
 // pinning: it is the difference between a deploy and a cold build, and nothing
@@ -96,5 +96,98 @@ describe("the rendered Dockerfile", () => {
 
   it("strips the upload token from the shipped environment file", () => {
     assert.match(render("backend"), /sed -i '\/\^SENTRY_AUTH_TOKEN=\/d'/);
+  });
+});
+
+// An app that is a directory of a repository rather than the whole of it. The
+// install still runs at the root, because that is where a workspace lockfile
+// resolves every package at once
+describe("an app in a directory of its own", () => {
+  function rendered(dir?: string) {
+    const app = config.apps.find((item) => item.name === "frontend")!;
+    const target = topology.apps.find((item) => item.name === "frontend")!;
+
+    return renderDockerfile(app.build, {
+      caches: target.caches,
+      port: target.port,
+      release: "da2a148",
+      environment: "staging",
+      envSecret: "frontend-env",
+      fileSecrets: {},
+      dir,
+    });
+  }
+
+  it("copies the whole repository, then works in the app", () => {
+    const file = rendered("apps/web");
+
+    assert.ok(at(file, "COPY . /app") < at(file, "WORKDIR /app/apps/web"));
+    assert.ok(at(file, "yarn install") < at(file, "COPY . /app"));
+  });
+
+  it("installs at the repository root, not in the app", () => {
+    const file = rendered("apps/web");
+
+    assert.ok(file.includes("COPY package.json /app/package.json"));
+    assert.ok(file.includes("target=/app/node_modules"));
+  });
+
+  it("reads the output and what it carries from the app", () => {
+    const file = rendered("apps/web");
+
+    assert.ok(file.includes("COPY --from=builder /app/apps/web/.next/standalone /app"));
+    assert.ok(file.includes("COPY --from=builder /app/apps/web/.next/static /app/.next/static"));
+    assert.ok(file.includes("COPY --from=builder /app/apps/web/public /app/public"));
+    assert.ok(file.includes("target=/app/apps/web/.next/cache"));
+  });
+
+  it("writes the environment file where the app will read it", () => {
+    assert.ok(rendered("apps/web").includes("/run/secrets/frontend-env /app/apps/web/.env"));
+    assert.ok(rendered().includes("/run/secrets/frontend-env /app/.env"));
+  });
+
+  it("changes nothing when the app is the repository", () => {
+    assert.equal(rendered(), rendered(undefined));
+    assert.ok(!rendered().includes("WORKDIR /app/"));
+  });
+});
+
+// next.config decides which of the two layouts the build produces, and they
+// ship different trees
+describe("a Next app that is not standalone", () => {
+  function rendered(standalone: boolean) {
+    const target = topology.apps.find((item) => item.name === "frontend")!;
+
+    return renderDockerfile(nextApp({ standalone, port: 3000 }), {
+      caches: target.caches,
+      port: target.port,
+      release: "da2a148",
+      environment: "staging",
+      envSecret: "frontend-env",
+      fileSecrets: {},
+      dir: "apps/web",
+    });
+  }
+
+  it("ships the whole tree and starts inside the app", () => {
+    const file = rendered(false);
+
+    assert.ok(file.includes("COPY --from=builder /app /app"));
+    assert.ok(file.includes("WORKDIR /app/apps/web"));
+    assert.match(file, /CMD .*next start/);
+  });
+
+  // A cache mount is not in the image, so a runtime resolving its own
+  // dependencies would find the directory empty
+  it("keeps node_modules out of the cache so it ships", () => {
+    assert.ok(!rendered(false).includes("target=/app/node_modules"));
+    assert.ok(rendered(true).includes("target=/app/node_modules"));
+  });
+
+  it("ships only the standalone output otherwise", () => {
+    const file = rendered(true);
+
+    assert.ok(file.includes("COPY --from=builder /app/apps/web/.next/standalone /app"));
+    assert.match(file, /CMD .*node \/app\/server\.js/);
   });
 });

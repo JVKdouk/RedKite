@@ -5,6 +5,7 @@ import type { Deployment, Environment } from "./types.js";
 export function defineDeployment<const T extends Deployment>(config: T): T {
   assertUniqueNames(config);
   assertRoutesResolvable(config);
+  assertDirsRelative(config);
   assertSteps(config.steps ?? []);
   return config;
 }
@@ -13,6 +14,23 @@ export function defineDeployment<const T extends Deployment>(config: T): T {
 // type the same way defineDeployment does, so a missing subnet fails to compile
 export function defineEnvironment<const T extends Environment>(environment: T): T {
   return environment;
+}
+
+// A dir is joined onto /app inside the image, so an absolute one would render
+// a path with two slashes and a climbing one would leave the checkout
+function assertDirsRelative(config: Deployment) {
+  for (const app of config.apps) {
+    const dir = app.dir;
+    if (dir === undefined) continue;
+
+    if (!dir || dir.startsWith("/") || dir.endsWith("/")) {
+      throw new Error(`dir for ${app.name} must be a path inside the repository`);
+    }
+
+    if (dir.split("/").includes("..")) {
+      throw new Error(`dir for ${app.name} must not climb out of the repository`);
+    }
+  }
 }
 
 function assertUniqueNames(config: Deployment) {

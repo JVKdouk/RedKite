@@ -5,7 +5,7 @@ import { BUILDER_STAGE, renderDockerfile } from "./dockerfile.js";
 import type { Host } from "./host.js";
 import { prepareSource } from "./source.js";
 import type { AppTopology } from "./topology.js";
-import type { AppSpec, BuildSpec } from "./types.js";
+import type { AppSpec } from "./types.js";
 
 // One build. The host clones the repository, renders the pipeline as a
 // Dockerfile, and hands it to the BuildKit inside the daemon that will run the
@@ -36,9 +36,10 @@ export type BuildResult = {
   fingerprint: string;
   // Versioned name the image carries, which is what the next deploy recognises
   tag: string;
-  // The builder stage, kept only where a step has to run with the app's own
-  // toolchain
-  builderTag?: string;
+  // The builder stage, kept as an image of its own. The runtime image holds
+  // only what the app compiled to, so this is the one place a step can run the
+  // app's own toolchain
+  builderTag: string;
   // True when the host already held this exact image and nothing was rebuilt
   cached: boolean;
 };
@@ -61,11 +62,12 @@ export async function build(
   });
 
   const release = source.release;
-  const fingerprint = fingerprintOf(spec, context, release);
+  const fingerprint = fingerprintOf(app, context, release);
   const tag = `${topology.container}:${release}-${fingerprint}`;
-  const builderTag = app.keepBuilder
-    ? `${topology.container}-builder:${release}-${fingerprint}`
-    : undefined;
+  // Always, rather than where something remembered to ask for it. It costs the
+  // export of layers the runtime build produced anyway, and a flag that has to
+  // be set before a step can run is a flag that will be missing
+  const builderTag = `${topology.container}-builder:${release}-${fingerprint}`;
 
   // The whole build is skipped, not just a transfer. Nothing about this commit,
   // this pipeline or these secrets differs from the image already sitting there
@@ -89,6 +91,7 @@ export async function build(
       fileSecrets: Object.fromEntries(
         secrets.files.map((file) => [file.path, file.id]),
       ),
+      dir: app.dir,
     }),
   );
 
@@ -111,21 +114,18 @@ export async function build(
     watch(detail, context.output),
   );
 
-  if (builderTag) {
-    // Every layer of this was just built, so it costs the export alone
-    detail("keeping the builder");
-    await docker.image.build(
-      { ...invocation, tags: [builderTag], target: BUILDER_STAGE },
-      watch(detail, context.output),
-    );
-  }
+  // Every layer of this was just built, so it costs the export alone
+  detail("keeping the builder");
+  await docker.image.build(
+    { ...invocation, tags: [builderTag], target: BUILDER_STAGE },
+    watch(detail, context.output),
+  );
 
   return { release, fingerprint, tag, builderTag, cached: false };
 }
 
-async function held(docker: Docker, tag: string, builderTag?: string) {
+async function held(docker: Docker, tag: string, builderTag: string) {
   if (!(await docker.image.exists(tag))) return false;
-  if (!builderTag) return true;
 
   // A runtime image without the builder that produced it would run the
   // migration from whatever release happened to be tagged last
@@ -178,11 +178,12 @@ function watch(detail: (message: string) => void, output?: (line: string) => voi
 
 // The commit is one input of several. The pipeline, the environment file and
 // any credential baked in as a file all change the image without touching it
-function fingerprintOf(spec: BuildSpec, context: BuildContext, release: string) {
+function fingerprintOf(app: AppSpec, context: BuildContext, release: string) {
   return createHash("sha256")
     .update(PIPELINE)
     .update(release)
-    .update(JSON.stringify(spec))
+    .update(app.dir ?? "")
+    .update(JSON.stringify(app.build))
     .update(context.env)
     .update(JSON.stringify(Object.entries(context.files).sort()))
     .digest("hex")

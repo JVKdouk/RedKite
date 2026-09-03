@@ -49,8 +49,9 @@ export type BuiltApp = {
   fingerprint: string;
   // The host already held this image, and nothing was rebuilt
   cached: boolean;
-  // The image a step hung before the swap runs in, for an app that kept one
-  builderTag?: string;
+  // The image a step hung before the swap runs in, holding the app's own
+  // toolchain rather than only what it compiled to
+  builderTag: string;
 };
 
 export type Built = Prepared & {

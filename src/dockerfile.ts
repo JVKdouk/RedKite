@@ -1,4 +1,4 @@
-import { destinationFor, mountFor } from "./layout.js";
+import { appRoot, destinationFor, mountFor, rootedAt } from "./layout.js";
 import type { BuildSpec } from "./types.js";
 
 // The pipeline, as the only thing that runs it: a Dockerfile handed to the
@@ -20,6 +20,10 @@ export type DockerfileContext = {
   envSecret: string;
   // Container path to secret id, for credentials that have to be files
   fileSecrets: Record<string, string>;
+  // Where the app sits in the repository, when it is not the repository. The
+  // build steps and the shipped command run there, and every /app path the
+  // spec names is read against it
+  dir?: string;
 };
 
 // Named here because the build stops at this stage to keep an image a
@@ -41,7 +45,10 @@ export function renderDockerfile(
 
 function builderStage(spec: BuildSpec, context: DockerfileContext) {
   const mounts = cacheMounts(spec, context);
+  const workdir = appRoot(context.dir);
 
+  // The repository root, not the app's own directory: a workspace resolves one
+  // lockfile for every package in it, so the install below has to see them all
   const lines = [
     `FROM ${spec.builderImage} AS ${BUILDER_STAGE}`,
     "WORKDIR /app",
@@ -58,9 +65,13 @@ function builderStage(spec: BuildSpec, context: DockerfileContext) {
 
   // Submodules are already in the context: the checkout on the host resolved
   // them, so nothing in the build needs an agent or a .git directory
+  lines.push("COPY . /app");
+
+  // Only now, so the steps below read the app's own manifest and write beside it
+  if (context.dir) lines.push(`WORKDIR ${workdir}`);
+
   lines.push(
-    "COPY . /app",
-    `RUN --mount=type=secret,id=${context.envSecret} cp /run/secrets/${context.envSecret} /app/.env`,
+    `RUN --mount=type=secret,id=${context.envSecret} cp /run/secrets/${context.envSecret} ${workdir}/.env`,
     `ENV SENTRY_RELEASE=${context.release}`,
   );
 
@@ -74,25 +85,34 @@ function builderStage(spec: BuildSpec, context: DockerfileContext) {
   if (spec.sourcemaps) {
     // The built .env ships inside the image, and an upload token is build-time
     const token = spec.sourcemaps.stripFromImage;
-    lines.push(`RUN sed -i '/^${token}=/d' ${spec.output}/.env`);
+    lines.push(`RUN sed -i '/^${token}=/d' ${rootedAt(spec.output, context.dir)}/.env`);
   }
 
   return lines;
 }
 
 function runtimeStage(spec: BuildSpec, context: DockerfileContext) {
-  const lines = [`FROM ${spec.runtimeImage}`, "WORKDIR /app"];
+  const output = rootedAt(spec.output, context.dir);
+
+  // The output becomes /app, so the command already starts at the app's root.
+  // A build that ships the whole repository is the exception: the tree arrives
+  // as it was, and the command has to start where dir says
+  const workdir = spec.output === "/app" ? appRoot(context.dir) : "/app";
+  const lines = [`FROM ${spec.runtimeImage}`, `WORKDIR ${workdir}`];
 
   if (spec.runtimePackages.length > 0) {
     lines.push(`RUN apk add --no-cache ${spec.runtimePackages.join(" ")}`);
   }
 
-  lines.push(`COPY --from=${BUILDER_STAGE} ${spec.output} /app`);
+  lines.push(`COPY --from=${BUILDER_STAGE} ${output} /app`);
 
   // Directories the output does not contain but the runtime needs, such as a
   // generated client or the static assets a standalone build leaves behind
+  // Only the source is rooted. Where it lands is read against the spec's own
+  // output, because dir moves the app inside the builder and not inside /app
   for (const path of spec.carry) {
-    lines.push(`COPY --from=${BUILDER_STAGE} ${path} ${destinationFor(path, spec.output)}`);
+    const from = rootedAt(path, context.dir);
+    lines.push(`COPY --from=${BUILDER_STAGE} ${from} ${destinationFor(path, spec.output)}`);
   }
 
   for (const [path, secret] of Object.entries(context.fileSecrets)) {
@@ -115,7 +135,7 @@ function cacheMounts(spec: BuildSpec, context: DockerfileContext) {
   return spec.caches
     .map((name) => {
       const id = context.caches[name] ?? name;
-      return `--mount=type=cache,id=${id},target=${mountFor(name)} `;
+      return `--mount=type=cache,id=${id},target=${mountFor(name, context.dir)} `;
     })
     .join("");
 }

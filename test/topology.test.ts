@@ -138,6 +138,21 @@ describe("topology", () => {
     );
   });
 
+  // dir is joined onto /app in the image, so anything but a relative path
+  // renders a Dockerfile that reads somewhere the checkout is not
+  it("rejects a dir that is not a path inside the repository", () => {
+    const withDir = (dir: string) => ({
+      ...config,
+      apps: config.apps.map((app, index) => (index === 0 ? { ...app, dir } : app)),
+    });
+
+    assert.throws(() => defineDeployment(withDir("/apps/web")), /inside the repository/);
+    assert.throws(() => defineDeployment(withDir("apps/web/")), /inside the repository/);
+    assert.throws(() => defineDeployment(withDir("")), /inside the repository/);
+    assert.throws(() => defineDeployment(withDir("../web")), /climb out/);
+    assert.doesNotThrow(() => defineDeployment(withDir("apps/web")));
+  });
+
   it("rejects two apps on one route", () => {
     const clashing = {
       ...config,
