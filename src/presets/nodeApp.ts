@@ -1,4 +1,4 @@
-import type { BuildSpec, SourcemapSpec } from "../types.js";
+import type { BuildSpec, CarryPath, SourcemapSpec } from "../types.js";
 
 type NodeAppOptions = {
   builder?: string;
@@ -9,7 +9,7 @@ type NodeAppOptions = {
   dependencies?: { files: string[]; step: string } | false;
   output: string;
   entrypoint: string[];
-  carry?: string[];
+  carry?: CarryPath[];
   submodules?: boolean;
   caches?: string[];
   sourcemaps?: SourcemapSpec;
@@ -32,11 +32,15 @@ export function nodeApp(options: NodeAppOptions): BuildSpec {
     output: options.output,
     carry: options.carry ?? [],
     entrypoint: options.entrypoint,
-    caches: options.caches ?? ["yarn", "modules"],
+    // Not the app's own node_modules: a step after the build runs in this image
+    // without the mounts, and a migration that cannot find prisma is what a
+    // cache mount instead of a layer looks like from the outside
+    caches: options.caches ?? ["yarn", "npm", "modules"],
     submodules: options.submodules ?? false,
     // The checkout arrives complete, so this is what a build step itself needs
     aptPackages: ["git"],
     runtimePackages: ["curl"],
+    runtimeSteps: [],
     sourcemaps: options.sourcemaps,
   };
 }

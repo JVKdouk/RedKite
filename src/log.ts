@@ -6,6 +6,9 @@
 export type Task = {
   // What the step is doing right now, replacing whatever it said before
   detail(message: string): void;
+  // A line the step produced, kept under it. detail replaces, this appends,
+  // and a build's own output is the reason there are two
+  line(message: string): void;
   done(message?: string): void;
   fail(message: string): void;
 };
@@ -22,6 +25,7 @@ export type Log = ((message: string) => void) & {
 
 const NOTHING: Task = {
   detail: () => {},
+  line: () => {},
   done: () => {},
   fail: () => {},
 };

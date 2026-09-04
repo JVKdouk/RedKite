@@ -19,6 +19,12 @@ export type Host = {
   readonly directory: string;
   // Survives a deploy: the git mirrors and the checkouts built from them
   readonly cache: string;
+  // Streams one command's output into another's input, the near side local and
+  // the far side here. Shipping an image is the only caller
+  pipe(local: string, remote: string, onLine?: OnLine): Promise<Result>;
+  // Signals everything this host started and answers with how many are still
+  // running. Zero is the only answer that means nothing was left behind
+  stop(signal: "TERM" | "KILL"): Promise<number>;
   close?(): Promise<void>;
 };
 

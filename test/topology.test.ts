@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
+import config, { authored } from "./deployment.js";
 import { defineDeployment, topologyFor } from "../src/index.js";
 
 // Every name and address a deployment runs on, written out rather than
@@ -20,10 +20,14 @@ const TODAY = {
   backRetiredAddress: "172.255.0.23",
   backCurrentAddress: "172.255.0.24",
   backLogsVolume: "acme-staging-backend-logs",
+  // No app-modules here: neither example app has a dir, so its target is the
+  // root's and the topology drops it.
   caches: [
     "backend-staging-yarn-cache",
+    "backend-staging-npm-cache",
     "backend-staging-modules-cache",
     "frontend-staging-yarn-cache",
+    "frontend-staging-npm-cache",
     "frontend-staging-modules-cache",
     "frontend-staging-next-app-cache",
   ],
@@ -142,8 +146,8 @@ describe("topology", () => {
   // renders a Dockerfile that reads somewhere the checkout is not
   it("rejects a dir that is not a path inside the repository", () => {
     const withDir = (dir: string) => ({
-      ...config,
-      apps: config.apps.map((app, index) => (index === 0 ? { ...app, dir } : app)),
+      ...authored,
+      apps: authored.apps.map((app, index) => (index === 0 ? { ...app, dir } : app)),
     });
 
     assert.throws(() => defineDeployment(withDir("/apps/web")), /inside the repository/);
@@ -153,10 +157,69 @@ describe("topology", () => {
     assert.doesNotThrow(() => defineDeployment(withDir("apps/web")));
   });
 
+  // Cloned or already here. The two are built differently enough that guessing
+  // between them is worse than being told
+  it("rejects an app naming both a repo and a path", () => {
+    const both = {
+      ...authored,
+      apps: authored.apps.map((app, index) =>
+        index === 0 ? { ...app, path: "./web" } : app,
+      ),
+    };
+
+    assert.throws(() => defineDeployment(both), /names both a repo and a path/);
+  });
+
+  it("rejects an app naming no source at all", () => {
+    const neither = {
+      ...authored,
+      apps: authored.apps.map((app, index) =>
+        index === 0 ? { ...app, repo: undefined } : app,
+      ),
+    };
+
+    assert.throws(() => defineDeployment(neither), /names no source/);
+  });
+
+  it("takes a path in place of a repo", () => {
+    const local = {
+      ...authored,
+      apps: authored.apps.map((app, index) =>
+        index === 0 ? { ...app, repo: undefined, path: "./web" } : app,
+      ),
+    };
+
+    assert.doesNotThrow(() => defineDeployment(local));
+  });
+
+  // A clone is whatever the repository holds, so an include there would be a
+  // line in the config that quietly does nothing
+  it("rejects an include on an app that is cloned", () => {
+    const narrowed = {
+      ...authored,
+      apps: authored.apps.map((app, index) =>
+        index === 0 ? { ...app, include: ["src"] } : app,
+      ),
+    };
+
+    assert.throws(() => defineDeployment(narrowed), /is cloned rather than built from a path/);
+  });
+
+  it("rejects an include that names nothing", () => {
+    const empty = {
+      ...authored,
+      apps: authored.apps.map((app, index) =>
+        index === 0 ? { ...app, repo: undefined, path: "./web", include: [] } : app,
+      ),
+    };
+
+    assert.throws(() => defineDeployment(empty), /includes nothing/);
+  });
+
   it("rejects two apps on one route", () => {
     const clashing = {
-      ...config,
-      apps: config.apps.map((app) => ({ ...app, route: "/" })),
+      ...authored,
+      apps: authored.apps.map((app) => ({ ...app, route: "/" })),
     };
 
     assert.throws(() => defineDeployment(clashing), /share the route/);
@@ -164,8 +227,8 @@ describe("topology", () => {
 
   it("rejects a name used twice", () => {
     const clashing = {
-      ...config,
-      services: [...config.services, { name: "redis", image: "redis:7" }],
+      ...authored,
+      services: [...authored.services, { name: "redis", image: "redis:7" }],
     };
 
     assert.throws(() => defineDeployment(clashing), /Duplicate name/);
@@ -212,5 +275,45 @@ describe("extra hosts a deployment declares", () => {
       topologyFor(config, "staging").extraHosts,
       withHosts({}).extraHosts,
     );
+  });
+});
+
+
+// A deployment with one environment and no reason to keep it in a file. Two of
+// them is two files, which is what the plural key is for
+describe("an environment the deployment carries", () => {
+  const inline = {
+    ...authored,
+    environment: { branch: "trunk", subnet: "10.44.0", publicPort: 8080 },
+  };
+
+  it("is used whatever name the command line asked for", () => {
+    for (const name of ["staging", "production", "anything"]) {
+      const derived = topologyFor(inline, name);
+
+      assert.equal(derived.branch, "trunk");
+      assert.equal(derived.cidr, "10.44.0.0/16");
+      assert.equal(derived.publicPort, 8080);
+    }
+  });
+
+  it("still threads the name it was asked for through every derived name", () => {
+    const derived = topologyFor(inline, "production");
+
+    assert.equal(derived.network, "acme-production-network");
+    assert.ok(derived.apps.every((app) => app.container.includes("-production-")));
+  });
+
+  // An override, not a default: a file it disagrees with does not win
+  it("overrides the files beside the deployment", () => {
+    const both = { ...config, environment: inline.environment };
+
+    assert.equal(topologyFor(config, "staging").branch, "staging");
+    assert.equal(topologyFor(both, "staging").branch, "trunk");
+  });
+
+  it("is what a deployment without one falls back from", () => {
+    assert.equal(topologyFor(config, "staging").branch, "staging");
+    assert.throws(() => topologyFor(config, "nowhere"), /Unknown environment/);
   });
 });

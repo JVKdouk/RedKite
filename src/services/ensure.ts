@@ -1,10 +1,12 @@
-import type { Docker } from "../docker.js";
+import { SPEC_LABEL, type Docker } from "../docker.js";
 import type { Host } from "../host.js";
 import type { Log } from "../log.js";
 import { LISTEN_PORT } from "../nginx.js";
 import { readEnv, type SecretStores } from "../secrets/refs.js";
 import type { ServiceTopology, Topology } from "../topology.js";
 import type { ServiceSpec } from "../types.js";
+
+import { fingerprintOf, type PlannedService } from "./planned.js";
 
 // redis.ts and nginx.ts were the same object described twice: ensure a sidecar
 // from an image is running, at an address, with a configuration file.
@@ -24,35 +26,62 @@ export type EnsureContext = {
   publish?: number;
 };
 
+// What became of one service, for a deploy that says what it did rather than
+// whether something changed
+export type Ensured = "adopted" | "started" | "created" | "recreated";
+
 export async function ensureService(
   spec: ServiceSpec,
   service: ServiceTopology,
   context: EnsureContext,
-) {
+): Promise<Ensured> {
   const { docker } = context;
   const name = service.container;
+  const fingerprint = fingerprintOf(plannedFrom(spec, service, context), context.topology);
 
-  // A service outlives a deploy, so only its absence is a reason to build one.
-  // Recreating it would drop the apps' connections for no gain
   if (await docker.container.exists(name)) {
-    if (await docker.container.isRunning(name)) return false;
+    // A service outlives a deploy, so being there is usually the whole answer.
+    // Being there having been created from something else is not: a changed
+    // public port or a rendered config only reaches a container that is made
+    if (await docker.container.specOf(name) === fingerprint) {
+      if (await docker.container.isRunning(name)) return "adopted";
 
-    context.log.warn(`${name} was not running, starting it`);
+      context.log.warn(`${name} was not running, starting it`);
+      await docker.container.start(name);
+      return "started";
+    }
+
+    context.log(`${name} is not what the deployment says, recreating it`);
+    await docker.container.stop(name);
+    await docker.container.remove(name);
+    await createService(spec, service, context, fingerprint);
     await docker.container.start(name);
-    return true;
+    return "recreated";
   }
 
   context.log(`Creating ${name} at ${service.address}`);
-  await createService(spec, service, context);
+  await createService(spec, service, context, fingerprint);
   await docker.container.start(name);
 
-  return true;
+  return "created";
+}
+
+// The same shape the plan compares against, assembled from what this call was
+// handed. Two spellings of it would drift from each other rather than from the
+// host, which is the one drift nothing here would report
+function plannedFrom(
+  spec: ServiceSpec,
+  service: ServiceTopology,
+  context: EnsureContext,
+): PlannedService {
+  return { spec, service, files: context.files, publish: context.publish };
 }
 
 async function createService(
   spec: ServiceSpec,
   service: ServiceTopology,
   context: EnsureContext,
+  fingerprint: string,
 ) {
   const { docker, topology } = context;
   const name = service.container;
@@ -64,6 +93,7 @@ async function createService(
     .name(name)
     .image(name)
     .network(topology.network)
+    .label(SPEC_LABEL, fingerprint)
     .ip(service.address);
 
   if (spec.restart) builder.restart(spec.restart);

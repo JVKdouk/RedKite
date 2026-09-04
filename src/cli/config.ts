@@ -8,7 +8,7 @@ import type { Deployment, Environment } from "../types.js";
 // Found by convention rather than named on the command line. A repository has
 // one deployment, and requiring the path is a flag nobody ever varies.
 //
-// The environments may live beside it, one file each, so the thing that differs
+// The environments live beside it, one file each, so the thing that differs
 // between staging and production is a file rather than a key several levels
 // down a literal.
 
@@ -34,19 +34,57 @@ export async function loadConfig(explicit?: string): Promise<Deployment> {
   const path = explicit ? resolve(explicit) : discover(process.cwd());
   const config = defaultOf(await load(path), path) as Deployment;
 
-  const environments = await loadEnvironments(dirname(path));
-  if (Object.keys(environments).length === 0) return config;
+  const beside = await loadEnvironments(dirname(path));
+  const named = await loadNamed(manifestOf(explicit ? dirname(path) : process.cwd()));
 
-  for (const name of Object.keys(environments)) {
-    if (!config.environments?.[name]) continue;
+  for (const name of Object.keys(named)) {
+    if (!beside[name]) continue;
 
     throw new Error(
-      `${name} is defined twice: in ${path} and in redkite.${name}.config.*. ` +
-        "An environment belongs to one of them",
+      `${name} is named by package.json and also sits beside the deployment. ` +
+        "An environment comes from one place or the other",
     );
   }
 
-  return { ...config, environments: { ...config.environments, ...environments } };
+  return { ...rooted(config, dirname(path)), environments: { ...beside, ...named } };
+}
+
+// A source path belongs to the file that named it, not to wherever the command
+// was run. Resolving it here is what lets a deploy from a workspace and one
+// from the root build the same tree
+function rooted(config: Deployment, directory: string): Deployment {
+  if (!config.apps.some((app) => app.path)) return config;
+
+  return {
+    ...config,
+    apps: config.apps.map((app) =>
+      app.path ? { ...app, path: resolve(directory, app.path) } : app,
+    ),
+  };
+}
+
+// package.json may name the file each environment lives in, for a repository
+// that keeps them somewhere the naming convention would not find them
+async function loadNamed(manifest: Manifest | undefined) {
+  const declared = manifest?.redkite.environments;
+  if (!manifest || !declared) return {};
+
+  const environments: Record<string, Environment> = {};
+
+  for (const [name, where] of Object.entries(declared)) {
+    if (typeof where !== "string") {
+      throw new Error(`package.json names ${name} as something other than a path`);
+    }
+
+    const path = resolve(manifest.root, where);
+    if (!existsSync(path)) {
+      throw new Error(`package.json points ${name} at ${path}, which is not there`);
+    }
+
+    environments[name] = defaultOf(await load(path), path) as Environment;
+  }
+
+  return environments;
 }
 
 // A deployment is one file at the root of the project, and a deploy is as
@@ -115,23 +153,50 @@ function missing(declared: string, from: string): never {
   );
 }
 
-// package.json says where the deployment files live, for a repository that
-// would rather not keep them at its root
-function directoryFrom(directory: string) {
-  const manifest = join(directory, "package.json");
-  if (!existsSync(manifest)) return undefined;
+// What a package.json says about redkite, and where it said it. The paths it
+// names are read against its own directory rather than the working one
+type Manifest = {
+  root: string;
+  redkite: { directory?: unknown; environments?: Record<string, unknown> };
+};
+
+function manifestAt(directory: string): Manifest | undefined {
+  const path = join(directory, "package.json");
+  if (!existsSync(path)) return undefined;
 
   try {
-    const parsed = JSON.parse(readFileSync(manifest, "utf8")) as {
-      redkite?: { directory?: unknown };
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      redkite?: Manifest["redkite"];
     };
 
-    const declared = parsed.redkite?.directory;
-    return typeof declared === "string" ? resolve(directory, declared) : undefined;
+    return parsed.redkite ? { root: directory, redkite: parsed.redkite } : undefined;
   } catch {
     // A package.json that does not parse is not this tool's to complain about
     return undefined;
   }
+}
+
+// The nearest one above wherever this was run, which is the same walk the
+// config itself is found by
+function manifestOf(from: string) {
+  let directory = from;
+
+  for (;;) {
+    const found = manifestAt(directory);
+    if (found) return found;
+
+    const parent = dirname(directory);
+    if (parent === directory) return undefined;
+
+    directory = parent;
+  }
+}
+
+// package.json says where the deployment files live, for a repository that
+// would rather not keep them at its root
+function directoryFrom(directory: string) {
+  const declared = manifestAt(directory)?.redkite.directory;
+  return typeof declared === "string" ? resolve(directory, declared) : undefined;
 }
 
 function defaultOf(module: unknown, path: string) {

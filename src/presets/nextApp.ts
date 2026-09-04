@@ -25,6 +25,8 @@ export function nextApp(options: NextAppOptions = {}): BuildSpec {
     dependencies: options.dependencies,
   };
 
+  // Relative, because the runtime starts at the app's root and a monorepo puts
+  // that under its own directory rather than at the top of the image
   const start = (command: string) =>
     ["sh", "-c", `HOSTNAME=0.0.0.0 PORT=${port} ${command}`];
 
@@ -40,9 +42,10 @@ export function nextApp(options: NextAppOptions = {}): BuildSpec {
         entrypoint: start("npx --no-install next start"),
         // Without the modules cache, so node_modules is a layer of the image
         // rather than a mount the runtime stage never sees
-        caches: ["yarn", "next-app"],
+        caches: ["yarn", "npm", "next-app"],
       }),
       preset: "nextApp",
+      keepsLayout: true,
     };
   }
 
@@ -50,10 +53,18 @@ export function nextApp(options: NextAppOptions = {}): BuildSpec {
     ...nodeApp({
       ...shared,
       output: "/app/.next/standalone",
-      carry: ["/app/.next/static", "/app/public"],
-      entrypoint: start("node /app/server.js"),
-      caches: ["yarn", "modules", "next-app"],
+      // static is what the build produced and the server serves. public is
+      // whatever the repository put there, and plenty of apps have none
+      carry: ["/app/.next/static", { path: "/app/public", optional: true }],
+      entrypoint: start("node server.js"),
+      // app-modules is what makes the build fast: node_modules on a mount
+      // rather than in a layer, which the standalone tree makes safe by
+      // carrying its own copy of everything the server reaches
+      caches: ["yarn", "npm", "modules", "app-modules", "next-app"],
     }),
     preset: "nextApp",
+    // The standalone tree traces from the workspace root, so an app in a
+    // subdirectory arrives at that subdirectory and not at the top of it
+    keepsLayout: true,
   };
 }

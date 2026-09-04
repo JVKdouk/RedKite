@@ -5,7 +5,7 @@
 ```sh
 npm install
 npm run build              # dist, what actually ships
-npm test                   # 123 assertions, no host required
+npm test                   # 268 assertions, no host required
 npm run check              # tsc --noEmit, including the type-level assertions
 npm run bench              # re-executed instructions, round trips, health wall clock
 npm run plan               # against the bundled example config
@@ -19,23 +19,6 @@ failing test or an unfilled licence.
 
 `prepublishOnly` runs `check`, `test` and `scripts/verifyRelease.mjs`, so a
 publish cannot go out with a failing test or an unfilled licence.
-
-The package name is `redkite-cd` for now. `redkite` was published on
-2026-09-03 at 19:00 UTC and unpublished a minute later, and npm blocks a name
-for 24 hours after its last version is removed, so `redkite` is claimable again
-from about 19:01 UTC on 2026-09-04.
-
-**Version 0.1.0 is permanently burned on `redkite`.** npm never lets a version
-number be republished under a name that once had it, unpublish or not. Moving
-back therefore means `0.1.1` or higher, not `0.1.0`, and the move itself is:
-
-1. `name` in `package.json`
-2. the three badge URLs, the install line, and the two import specifiers in
-   `README.md`
-3. this section
-
-Everything a user writes stays put: the command is `redkite`, the config is
-`redkite.config.ts`. Only the install line and the import specifier move.
 
 ## Layout
 
@@ -56,8 +39,12 @@ Everything a user writes stays put: the command is `redkite`, the config is
 | `steps.ts` | Steps a config hangs around them, and the network they run on |
 | `services/index.ts` | `redis`, `postgres`, and the specs they answer with |
 | `services/ensure.ts` | One primitive for every service and for nginx |
+| `services/planned.ts` | What should be running, its fingerprint, and drift |
 | `secrets/` | `bitwarden(id)` refs, merge order, the CLI as a process |
 | `cli/config.ts` | Discovery: the upward walk, `redkite.<env>.config.ts` |
+| `cli/screen.ts` | The step viewer as a pure model and a pure renderer |
+| `cli/viewer.ts` | The terminal half of it: raw keys, frames, restoring |
+| `shell.ts` | One child process runner, shared by both hosts |
 | `health.ts` | One loop, `expect` supplied per app |
 | `presets/` | `nextApp`, `nodeApp`, and the two Next output layouts |
 | `layout.ts` | Where a cache mounts, and where `dir` moves a path to |
@@ -88,6 +75,10 @@ every secret's id, because a secret mount is not part of a layer's cache key:
 without it, a changed environment file is answered with the image built from the
 old one.
 
+`test/planned.test.ts` writes out every config change that has to reach a
+running service, so a fingerprint that stops covering one fails here rather than
+on a host that keeps serving the previous configuration.
+
 `test/pipeline.test.ts` asserts redkite's four steps are ordinary members of the
 list, that a config replacing one takes its place, and that every step's `check`
 runs before the first step does.
@@ -115,20 +106,87 @@ to `sh -c` already, so wrapping the step makes the whole command one word.
 cannot start the app it has just released, and it self-heals on the next deploy,
 which is why it takes a real run to notice.
 
-**Services are adopted, never recreated.** `ensureService` returns early for a
-container that already exists, so a rendered config only lands when the
-container is created. Changing `maxBodySize` or adding an app writes an nginx
-configuration the running proxy never sees.
+**A service is adopted because it matches, not because it is there.** Every one
+is created with a `redkite.spec` label holding a fingerprint of everything a
+recreate would change, the rendered files included. `ensureService` compares it
+and recreates on a difference, and `plan` reports the same comparison without
+touching anything. Docker cannot change a label without recreating, which is
+exactly when the fingerprint changes, so there is nothing to keep in step.
+
+**The fingerprint names secrets, it does not read them.** Whether the running
+service is the one the config describes is a question a plan should answer
+without unlocking a vault, so a changed ref counts and a rotated value does not.
 
 **A step on the deployment network needs the aliases too.** Attaching the
 network alone is not enough: a service answers to the alias the apps know it by,
 which is an `--add-host`, not a network alias. `attachment("deployment", ...)`
 carries both, and that is the whole reason it exists rather than a flag.
 
+**A build is not the process you spawned, it is its child.** Signalling the
+shell that ran `docker build` kills the shell; docker stays connected to the
+daemon and the build carries on. Every child is spawned `detached`, which makes
+it a process group leader, and a stop signals the group.
+
+**Over ssh the group is on the other machine.** Killing the local client leaves
+the far side running and takes away the only thing that could reach it, so a
+stop is sent *through* the connection, not to it. Each command is wrapped in
+`set -m; { … } &` to get a process group there, and its pid is written into the
+deploy's directory. `host.stop()` signals those groups and answers with how many
+are still alive.
+
+**The count is the contract.** `spawnCollect` settles on the child's `close` and
+on nothing else, and `host.stop()` answers with survivors, so a caller can wait
+for exactly one thing: nothing left. An abort no longer kills anything by
+itself; it only stops the next command being issued.
+
+**An abort is not a kill.** Aborting the signal stops new commands. What is
+already running is stopped by signalling it, which is the host's to do.
+
+**The way out is offered, never taken.** Five presses means a process that has
+had SIGKILL and is still there, which nothing here can end. `stopper` says what
+leaving costs and waits for one more press, because leaving is the only outcome
+that abandons running work.
+
+**An environment is a file, or the one the deployment carries.** `environmentOf`
+is the only place that decides which: the singular `environment` key overrides
+every file, and `defineDeployment` takes `environments?: never`, so a config that
+declares a set of them does not compile and the loader is the only thing that
+fills that key. `test/points.check.ts` is what holds that in place, and
+`test/deployment.ts` is where the example's files are assembled for the tests
+that need a loaded config.
+
+**Nothing else may write to the terminal while the view is up.** A child that
+inherits stdio draws into the frame. `ssh-add` has to be able to ask for a
+passphrase, so the agent is opened before the view rather than muted.
+
+**The viewer decides nothing.** `screen.ts` is a model, `apply`, and `render`;
+`viewer.ts` only reads keys, draws frames and restores the terminal. Anything
+you can assert on belongs in the first, and `test/screen.test.ts` is where the
+whole view is checked without a terminal.
+
+**A pty reports 0 rows, not nothing.** `stream.rows ?? 24` leaves a one-row view
+that can only show the step under the cursor. The fallback has to test the value,
+not its absence.
+
+**A terminal delivers a chunk, not a key.** Two arrows pressed quickly arrive as
+one read, so the input is parsed as a sequence. Matching the whole chunk matched
+neither of them.
+
+**A missing `COPY` source fails the build, and that is usually what you want.**
+`copy` is the plain form; `copyOrSkip` brackets the last character so the source
+becomes a pattern, and a pattern matching nothing is skipped. Reach for
+`copyOrSkip` only where absence is a fact about the repository, never where it
+would mean the build produced nothing and said nothing.
+
 **A cache mount is not in the image.** `node_modules` is a cache mount, so a
 runtime that resolves its own dependencies finds the directory empty. That is
 why `nextApp({ standalone: false })` drops the modules cache: the install has to
 land in a layer.
+
+**There are two roots, not one.** `dir` is where the app was built; `keepsLayout`
+says whether the output tree put it back under that path or flattened it to the
+top. The carry sources are rooted by the first and their destinations by the
+second, and a Next standalone monorepo build is the case where they differ.
 
 **`dir` moves the app, not the install.** Build steps and the shipped command
 run in `/app/<dir>`, and every `/app` path in a build spec is read against it.

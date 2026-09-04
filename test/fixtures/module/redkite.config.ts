@@ -2,10 +2,7 @@ import { defineDeployment, nodeApp } from "../../../src/index.js";
 
 export default defineDeployment({
   project: "fixture",
-  environments: {
-    staging: { branch: "staging", subnet: "10.0.0", publicPort: 80 },
-  },
-    services: [],
+  services: [],
   apps: [
     {
       name: "app",

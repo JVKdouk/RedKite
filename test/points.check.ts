@@ -1,4 +1,4 @@
-import { defineStep } from "../src/index.js";
+import { defineDeployment, defineStep } from "../src/index.js";
 import type { Built, Finished, Prepared, Released, Start } from "../src/index.js";
 
 // Not a test: a file that only compiles if the wrong step is impossible to
@@ -69,3 +69,24 @@ defineStep("build", (input) => input);
 // used to have is not a point
 // @ts-expect-error
 defineStep("deploy:before:migrate", (input) => input);
+
+// An environment is a file of its own. Two places to put one is two places for
+// them to disagree, so the config surface has only the one
+defineDeployment({
+  project: "acme",
+  services: [],
+  apps: [],
+  // @ts-expect-error
+  environments: { staging: { branch: "main", subnet: "10.0.0", publicPort: 80 } },
+});
+
+// And a deployment without them still compiles, because the loader fills them
+defineDeployment({ project: "acme", services: [], apps: [] });
+
+// The singular one is the deployment's own to declare: one environment, no file
+defineDeployment({
+  project: "acme",
+  services: [],
+  apps: [],
+  environment: { branch: "main", subnet: "10.0.0", publicPort: 80 },
+});

@@ -21,16 +21,22 @@ export type BuildInvocation = {
 
 const RUNNING = new Set(["running", "restarting"]);
 
+// What a container was created from, recorded on the container itself. Docker
+// cannot change a label without recreating, which is exactly when it changes
+export const SPEC_LABEL = "redkite.spec";
+
 // One command in place of an inspect per object. Every guard in this file used
 // to be its own round trip, and a round trip here is a container exec
 const SNAPSHOT = [
-  "ps -a --format '{{.Names}}\t{{.State}}'",
+  `ps -a --format '{{.Names}}\t{{.State}}\t{{.Label "${SPEC_LABEL}"}}'`,
   "docker image ls --format '{{.Repository}}:{{.Tag}}'",
   "docker network ls --format '{{.Name}}'",
 ].join("; echo --- ; ");
 
+type ContainerState = { state: string; spec?: string };
+
 type HostState = {
-  containers: Map<string, string>;
+  containers: Map<string, ContainerState>;
   images: Set<string>;
   networks: Set<string>;
 };
@@ -64,8 +70,8 @@ export class Docker {
     return {
       containers: new Map(
         lines(containers).map((line) => {
-          const [name = "", status = "unknown"] = line.split("\t");
-          return [name, status];
+          const [name = "", state = "unknown", spec = ""] = line.split("\t");
+          return [name, { state, spec: spec || undefined }];
         }),
       ),
       // Both spellings, so a lookup by bare name and one by name:tag both hit
@@ -209,7 +215,13 @@ class DockerContainer {
   }
 
   async status(name: string) {
-    return (await this.docker.snapshot()).containers.get(name) ?? "none";
+    return (await this.docker.snapshot()).containers.get(name)?.state ?? "none";
+  }
+
+  // What the running container was created from. Absent for one redkite did not
+  // create, or created before it started recording it
+  async specOf(name: string) {
+    return (await this.docker.snapshot()).containers.get(name)?.spec;
   }
 
   async isRunning(name: string) {
@@ -226,7 +238,7 @@ class DockerContainer {
       "Container start failed",
     );
 
-    await this.docker.track((state) => state.containers.set(name, "running"));
+    await this.docker.track((state) => set(state, name, "running"));
     return true;
   }
 
@@ -238,7 +250,7 @@ class DockerContainer {
       "Container stop failed",
     );
 
-    await this.docker.track((state) => state.containers.set(name, "exited"));
+    await this.docker.track((state) => set(state, name, "exited"));
     return true;
   }
 
@@ -254,9 +266,9 @@ class DockerContainer {
     );
 
     await this.docker.track((state) => {
-      const status = state.containers.get(from) ?? "unknown";
+      const held = state.containers.get(from) ?? { state: "unknown" };
       state.containers.delete(from);
-      state.containers.set(to, status);
+      state.containers.set(to, held);
     });
 
     return true;
@@ -279,13 +291,24 @@ class DockerContainer {
 
   async create(builder: DockerBuilder) {
     await this.docker.runOrThrow(builder.parse(), "Container create failed");
-    await this.docker.track((state) => state.containers.set(builder.named(), "created"));
+    await this.docker.track((state) =>
+      state.containers.set(builder.named(), {
+        state: "created",
+        spec: builder.labelled(SPEC_LABEL),
+      }),
+    );
     return true;
   }
 
   builder() {
     return new DockerBuilder(this);
   }
+}
+
+// A state change keeps whatever the container was created from: the label is
+// on the container, and only a recreate can move it
+function set(state: HostState, name: string, next: string) {
+  state.containers.set(name, { ...state.containers.get(name), state: next });
 }
 
 function lines(block: string) {
@@ -306,6 +329,7 @@ export class DockerBuilder {
   private readonly _hosts: string[] = [];
   private readonly _ports: string[] = [];
   private readonly _env: string[] = [];
+  private readonly _labels = new Map<string, string>();
   private _envFile?: string;
 
   constructor(private readonly container: DockerContainer) {}
@@ -362,6 +386,15 @@ export class DockerBuilder {
     return this;
   }
 
+  label(name: string, value: string) {
+    this._labels.set(name, value);
+    return this;
+  }
+
+  labelled(name: string) {
+    return this._labels.get(name);
+  }
+
   port(from: number, to: number) {
     this._ports.push(`${from}:${to}`);
     return this;
@@ -385,6 +418,7 @@ export class DockerBuilder {
       ...this._networks.map((network) => `--network ${network}`),
       ...this._ports.map((port) => `-p ${port}`),
       ...this._hosts.map((host) => `--add-host ${host}`),
+      ...[...this._labels].map(([name, value]) => `--label ${name}=${value}`),
       ...(this._envFile ? [`--env-file ${this._envFile}`] : []),
       ...this._env.map((entry) => `-e ${entry}`),
       ...(this._ip ? [`--ip ${this._ip}`] : []),

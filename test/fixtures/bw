@@ -1,0 +1,12 @@
+#!/bin/sh
+# Stands in for the Bitwarden CLI. Records what it was asked so a test can say
+# the store called a binary rather than resolving one through npx each time
+printf '%s\n' "$*" >> "$BW_CALLS"
+
+case "$1" in
+  login) exit 0 ;;
+  unlock) printf 'session-token' ;;
+  sync) exit 0 ;;
+  get) printf 'A=1\n' ;;
+  *) printf '2026.4.2\n' ;;
+esac

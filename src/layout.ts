@@ -2,12 +2,18 @@
 // and the topology have to agree on these, and a second copy of them is a
 // drift waiting to happen.
 
-// The yarn cache is global, everything else is a path inside the project
+// A package manager's own cache is global; everything else is a path inside the
+// project. Both managers are listed because a preset does not know which the
+// repository uses, and mounting the wrong one is a cache that never hits
 export function mountFor(name: string, dir?: string) {
   if (name === "yarn") return "/root/.yarn";
-  // Where the dependency layer installed it. That layer runs at the repository
-  // root, which is also where a workspace hoists node_modules to
+  if (name === "npm") return "/root/.npm";
+  // A workspace resolves one lockfile at the repository root and hoists there
   if (name === "modules") return "/app/node_modules";
+  // An app that installs against its own manifest puts them beside it instead.
+  // Both are mounted, because only the install command knows which it does, and
+  // mounting the wrong one alone is a cache that never hits
+  if (name === "app-modules") return `${appRoot(dir)}/node_modules`;
   if (name === "next-app") return rootedAt("/app/.next/cache", dir);
   return rootedAt(`/app/.cache/${name}`, dir);
 }

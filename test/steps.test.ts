@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
+import config from "./deployment.js";
 import { attachment, topologyFor } from "../src/index.js";
 
 // What a step's container is attached to. The deployment network is the only

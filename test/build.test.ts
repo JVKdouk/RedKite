@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
+import config from "./deployment.js";
 import type { AppSpec, BuildContext } from "../src/index.js";
 import { build, Docker, topologyFor } from "../src/index.js";
 import { fakeHost, RELEASE } from "./fakes.js";
@@ -96,6 +96,101 @@ describe("build pipeline", () => {
 
     assert.ok(result.builderTag.includes("-builder:"));
     assert.ok(host.commands.some((c) => c.includes("--target builder")));
+  });
+});
+
+// A host too small to compile on. The image is built here and streamed over the
+// connection that is already open, rather than built where it is needed
+describe("building on this machine", () => {
+  it("ships every tag it built, in one archive", async () => {
+    const builder = fakeHost();
+    const runner = fakeHost();
+    const target = topology.apps.find((app) => app.name === "frontend")!;
+
+    const result = await build(frontend, target, {
+      host: builder.host,
+      docker: new Docker(builder.host),
+      deliver: { host: runner.host, docker: new Docker(runner.host) },
+      env: "",
+      files: {},
+      branch: "staging",
+      environment: "staging",
+    });
+
+    assert.equal(runner.piped.length, 1);
+    assert.equal(
+      runner.piped[0],
+      `docker save ${result.tag} ${target.container} ${result.builderTag} | docker load`,
+    );
+
+    // Nothing was built on the machine the containers run on
+    assert.ok(!runner.commands.some((command) => command.startsWith("build ")));
+    assert.ok(builder.commands.some((command) => command.startsWith("build ")));
+  });
+
+  // The builder holding an image the runner does not is the whole reason the
+  // skip check cannot ask the daemon that compiled it
+  it("skips the build only when the runner holds it", async () => {
+    const target = topology.apps.find((app) => app.name === "frontend")!;
+
+    const first = fakeHost();
+    const built = await build(frontend, target, {
+      host: first.host,
+      docker: new Docker(first.host),
+      env: "",
+      files: {},
+      branch: "staging",
+      environment: "staging",
+    });
+
+    // A second machine that compiled it before, deploying to a host that never
+    // received it
+    const builder = fakeHost();
+    for (const image of first.host === builder.host ? [] : first.images) builder.images.add(image);
+
+    const runner = fakeHost();
+    const again = await build(frontend, target, {
+      host: builder.host,
+      docker: new Docker(builder.host),
+      deliver: { host: runner.host, docker: new Docker(runner.host) },
+      env: "",
+      files: {},
+      branch: "staging",
+      environment: "staging",
+    });
+
+    assert.equal(built.tag, again.tag);
+    assert.equal(again.cached, false, "the runner has never seen it");
+    assert.equal(runner.piped.length, 1);
+  });
+
+  it("does not ship when the runner already holds it", async () => {
+    const target = topology.apps.find((app) => app.name === "frontend")!;
+
+    const runner = fakeHost();
+    await build(frontend, target, {
+      host: runner.host,
+      docker: new Docker(runner.host),
+      env: "",
+      files: {},
+      branch: "staging",
+      environment: "staging",
+    });
+
+    const builder = fakeHost();
+    const again = await build(frontend, target, {
+      host: builder.host,
+      docker: new Docker(builder.host),
+      deliver: { host: runner.host, docker: new Docker(runner.host) },
+      env: "",
+      files: {},
+      branch: "staging",
+      environment: "staging",
+    });
+
+    assert.equal(again.cached, true);
+    assert.deepEqual(runner.piped, []);
+    assert.ok(!builder.commands.some((command) => command.startsWith("build ")));
   });
 });
 
@@ -203,5 +298,39 @@ describe("what the image is tagged by", () => {
 
   it("is otherwise stable, so an unchanged deploy skips the build entirely", async () => {
     assert.equal(await fingerprintOf(backend), await fingerprintOf(backend));
+  });
+});
+
+// A directory on this machine, built as it stands. The release is what the tree
+// holds and the context is what the deployment said belongs in it
+describe("building from a directory", () => {
+  const local: AppSpec = { ...backend, repo: undefined, path: "/home/jvck/work/api" };
+
+  it("builds the directory rather than cloning it", async () => {
+    const { host } = await run(local);
+
+    assert.ok(!host.commands.some((command) => command.includes("git clone")));
+    assert.ok(host.commands.some((command) => command.includes("write-tree")));
+
+    const context = buildCommand(host.commands).split(" ").at(-1);
+    assert.equal(context, local.path);
+  });
+
+  // Narrowing the release without narrowing this would hand BuildKit a
+  // node_modules the release says nothing about
+  it("holds the context to what the app said ships", async () => {
+    const { host } = await run({ ...local, include: ["src", "package.json"] });
+    const written = host.files.get("backend.Dockerfile.dockerignore") ?? "";
+
+    assert.ok(written.startsWith("*\n"), written);
+    assert.ok(written.includes("!src"), written);
+    assert.ok(written.includes("!package.json"), written);
+  });
+
+  it("leaves the context to the work tree when nothing was named", async () => {
+    const { host } = await run(local);
+    const written = host.files.get("backend.Dockerfile.dockerignore") ?? "";
+
+    assert.equal(written, ".git\n**/.git\n");
   });
 });

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 
 import type { Docker } from "./docker.js";
-import { BUILDER_STAGE, renderDockerfile } from "./dockerfile.js";
+import { BUILDER_STAGE, renderDockerfile, renderDockerignore } from "./dockerfile.js";
 import type { Host } from "./host.js";
 import { prepareSource } from "./source.js";
 import type { AppTopology } from "./topology.js";
@@ -14,6 +15,9 @@ import type { AppSpec } from "./types.js";
 export type BuildContext = {
   host: Host;
   docker: Docker;
+  // Set when the image is built somewhere other than where it will run. The
+  // build goes to the daemon above, and what it produced is streamed to this one
+  deliver?: { host: Host; docker: Docker };
   // Contents of the .env the image ships with
   env: string;
   // Container path to the contents that land there
@@ -28,7 +32,7 @@ export type BuildContext = {
 // Bumped when the pipeline changes shape without the config changing. The tag
 // below is what tells a host it already holds an image, and a host that trusts
 // the commit alone serves the last pipeline's output forever
-const PIPELINE = "3";
+const PIPELINE = "4";
 
 export type BuildResult = {
   release: string;
@@ -56,6 +60,10 @@ export async function build(
   const source = await prepareSource(host, {
     name: topology.container,
     repo: app.repo,
+    // Already absolute when the CLI loaded the config, because a path is read
+    // against the deployment file rather than wherever this was run
+    path: app.path && resolve(app.path),
+    include: app.include,
     branch: context.branch,
     submodules: spec.submodules,
     detail,
@@ -69,11 +77,15 @@ export async function build(
   // be set before a step can run is a flag that will be missing
   const builderTag = `${topology.container}-builder:${release}-${fingerprint}`;
 
+  // Asked of the daemon that will run the container, not the one that builds.
+  // An image this machine holds and the host does not is one still to be sent
+  const runner = context.deliver?.docker ?? docker;
+
   // The whole build is skipped, not just a transfer. Nothing about this commit,
   // this pipeline or these secrets differs from the image already sitting there
-  if (await held(docker, tag, builderTag)) {
+  if (await held(runner, tag, builderTag)) {
     detail(`already built at ${release.slice(0, 7)}`);
-    await docker.image.retag(tag, topology.container);
+    await runner.image.retag(tag, topology.container);
 
     return { release, fingerprint, tag, builderTag, cached: true };
   }
@@ -98,10 +110,13 @@ export async function build(
   // BuildKit reads this beside the Dockerfile rather than inside the context,
   // which is what lets the checkout stay a checkout: the repository keeps its
   // own .dockerignore, and .git never enters the build
-  await host.write(`${app.name}.Dockerfile.dockerignore`, ".git\n**/.git\n");
+  await host.write(
+    `${app.name}.Dockerfile.dockerignore`,
+    renderDockerignore(app.include),
+  );
 
   const invocation = {
-    context: source.path,
+    context: source.tree,
     dockerfile,
     secrets: Object.fromEntries(
       [secrets.env, ...secrets.files].map((secret) => [secret.id, secret.src]),
@@ -121,7 +136,37 @@ export async function build(
     watch(detail, context.output),
   );
 
+  await ship(context, [tag, topology.container, builderTag], detail);
+
   return { release, fingerprint, tag, builderTag, cached: false };
+}
+
+// One stream, rather than a tarball written here, copied, and read there. The
+// tags travel inside the archive, so nothing has to be named again on arrival
+async function ship(
+  context: BuildContext,
+  tags: (string | undefined)[],
+  detail: (message: string) => void,
+) {
+  const deliver = context.deliver;
+  if (!deliver) return;
+
+  const named = tags.filter((tag) => tag !== undefined);
+  detail(`shipping ${named.length} images`);
+
+  const result = await deliver.host.pipe(
+    `docker save ${named.join(" ")}`,
+    "docker load",
+    context.output,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(`Could not ship the image: ${result.stderr || result.stdout}`);
+  }
+
+  await deliver.docker.track((state) => {
+    for (const tag of named) state.images.add(tag);
+  });
 }
 
 async function held(docker: Docker, tag: string, builderTag: string) {

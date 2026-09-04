@@ -1,5 +1,8 @@
 import type { AppSpec, Deployment, ServiceSpec } from "./types.js";
 
+import { environmentOf } from "./config.js";
+import { mountFor } from "./layout.js";
+
 // Every name and address the deployment uses, derived from the app list. This
 // is the file that replaces the constants block: nothing is chosen by hand, so
 // adding an app cannot collide with an address somebody already picked.
@@ -36,7 +39,8 @@ export type Topology = {
   network: string;
   subnet: string;
   cidr: string;
-  publicPort: number;
+  // Absent for an environment written for verify alone, which publishes nothing
+  publicPort?: number;
   // Derived, never listed. Apps with routes imply exactly one proxy, and it
   // keeps the address it was given before any of this was derived
   router: ServiceTopology;
@@ -47,11 +51,23 @@ export type Topology = {
 };
 
 export function topologyFor(config: Deployment, environment: string): Topology {
-  const env = config.environments?.[environment];
+  const env = environmentOf(config, environment);
 
   if (!env) {
-    const known = Object.keys(config.environments ?? {}).join(", ") || "none";
-    throw new Error(`Unknown environment ${environment}, expected one of ${known}`);
+    const known = Object.keys(config.environments ?? {});
+
+    // An environment is a file, so having none is a different mistake from
+    // asking for one that is not there, and reads as one
+    if (known.length === 0) {
+      throw new Error(
+        `No environments. Each one is a redkite.<name>.config.ts beside the ` +
+          `deployment, so ${environment} wants a redkite.${environment}.config.ts`,
+      );
+    }
+
+    throw new Error(
+      `Unknown environment ${environment}, expected one of ${known.join(", ")}`,
+    );
   }
 
   const prefix = `${config.project}-${environment}`;
@@ -99,12 +115,19 @@ function appTopology(
     mountPath,
   }));
 
-  const caches = Object.fromEntries(
-    app.build.caches.map((cache) => [
-      cache,
-      `${app.name}-${environment}-${cache}-cache`,
-    ]),
-  );
+  // Deduplicated by where each one mounts: an app that is the whole repository
+  // resolves the root and its own node_modules to one path, and two ids for one
+  // target would be a second cache nothing ever writes to
+  const targets = new Set<string>();
+  const caches: Record<string, string> = {};
+
+  for (const cache of app.build.caches) {
+    const target = mountFor(cache, app.dir);
+    if (targets.has(target)) continue;
+
+    targets.add(target);
+    caches[cache] = `${app.name}-${environment}-${cache}-cache`;
+  }
 
   return {
     name: app.name,

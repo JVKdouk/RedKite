@@ -1,16 +1,24 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 
-import { discover, loadEnvironments } from "../src/cli/config.js";
+import { discover, loadConfig, loadEnvironments } from "../src/cli/config.js";
 
 // A deployment is one file at the root of the project, and a deploy is as
 // likely to be run from a workspace inside it as from there.
 
+// Every tree this makes, so the suite does not leave one behind per run
+const made: string[] = [];
+
+after(async () => {
+  await Promise.all(made.map((root) => rm(root, { recursive: true, force: true })));
+});
+
 async function project(files: string[] | Record<string, string>) {
   const root = await mkdtemp(join(tmpdir(), "redkite-discover-"));
+  made.push(root);
   const entries = Array.isArray(files)
     ? Object.fromEntries(files.map((file) => [file, "export default {};\n"]))
     : files;
@@ -88,6 +96,7 @@ describe("finding the config", () => {
 
   it("says what it looked for when there is none", async () => {
     const root = await mkdtemp(join(tmpdir(), "redkite-discover-"));
+    made.push(root);
 
     assert.throws(() => discover(root), /No redkite\.config\.ts found/);
   });
@@ -128,6 +137,79 @@ describe("environments in files of their own", () => {
     await assert.rejects(
       () => loadEnvironments(root),
       /staging is defined by both/,
+    );
+  });
+});
+
+
+// A repository that keeps its environments somewhere the naming convention
+// would not find them says so once, in the manifest it already has
+describe("environments package.json names", () => {
+  const deployment = 'export default { project: "p", services: [], apps: [] };\n';
+  const environment = (branch: string) =>
+    `export default { branch: "${branch}", subnet: "10.0.0", publicPort: 80 };\n`;
+
+  it("reads each one from the path it was pointed at", async () => {
+    const root = await project({
+      "package.json": JSON.stringify({
+        redkite: { environments: { production: "./envs/live.mjs" } },
+      }),
+      "redkite.config.mjs": deployment,
+      "envs/live.mjs": environment("main"),
+    });
+
+    const config = await loadConfig(join(root, "redkite.config.mjs"));
+
+    assert.deepEqual(Object.keys(config.environments ?? {}), ["production"]);
+    assert.equal(config.environments?.production?.branch, "main");
+  });
+
+  it("reads them beside a deployment that also has files of its own", async () => {
+    const root = await project({
+      "package.json": JSON.stringify({
+        redkite: { environments: { production: "./envs/live.mjs" } },
+      }),
+      "redkite.config.mjs": deployment,
+      "redkite.staging.config.mjs": environment("staging"),
+      "envs/live.mjs": environment("main"),
+    });
+
+    const config = await loadConfig(join(root, "redkite.config.mjs"));
+
+    assert.deepEqual(Object.keys(config.environments ?? {}).sort(), [
+      "production",
+      "staging",
+    ]);
+  });
+
+  // One environment, two files, and nothing to say which of them is the one
+  it("refuses an environment that is in both places", async () => {
+    const root = await project({
+      "package.json": JSON.stringify({
+        redkite: { environments: { staging: "./envs/other.mjs" } },
+      }),
+      "redkite.config.mjs": deployment,
+      "redkite.staging.config.mjs": environment("staging"),
+      "envs/other.mjs": environment("elsewhere"),
+    });
+
+    await assert.rejects(
+      () => loadConfig(join(root, "redkite.config.mjs")),
+      /comes from one place or the other/,
+    );
+  });
+
+  it("refuses a path that is not there rather than deploying without it", async () => {
+    const root = await project({
+      "package.json": JSON.stringify({
+        redkite: { environments: { production: "./envs/missing.mjs" } },
+      }),
+      "redkite.config.mjs": deployment,
+    });
+
+    await assert.rejects(
+      () => loadConfig(join(root, "redkite.config.mjs")),
+      /which is not there/,
     );
   });
 });

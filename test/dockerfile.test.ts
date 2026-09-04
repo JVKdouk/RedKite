@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
-import { nextApp, renderDockerfile, topologyFor } from "../src/index.js";
+import config from "./deployment.js";
+import { nextApp, renderDockerfile, renderDockerignore, topologyFor } from "../src/index.js";
 
 // The Dockerfile is the pipeline, and the layer order is the part worth
 // pinning: it is the difference between a deploy and a cold build, and nothing
@@ -33,7 +33,7 @@ describe("the rendered Dockerfile", () => {
   it("installs dependencies before the source is copied", () => {
     const file = render("backend");
 
-    assert.ok(at(file, "COPY package.json") < at(file, "yarn install"));
+    assert.ok(at(file, "COPY package.jso[n]") < at(file, "yarn install"));
     assert.ok(at(file, "yarn install") < at(file, "COPY . /app"));
   });
 
@@ -84,7 +84,27 @@ describe("the rendered Dockerfile", () => {
 
     assert.match(file, /COPY --from=builder \/app\/\.next\/standalone \/app/);
     assert.match(file, /COPY --from=builder \/app\/\.next\/static \/app\/\.next\/static/);
-    assert.match(file, /COPY --from=builder \/app\/public \/app\/public/);
+    assert.match(file, /COPY --from=builder \/app\/publi\[c\] \/app\/public/);
+  });
+
+  // A COPY whose source is missing fails the build. The bracket makes it a
+  // pattern, and a pattern matching nothing is skipped, so which form a line
+  // takes is the whole of whether that directory is allowed to be absent
+  it("fails on a source the build cannot have produced, and only then", () => {
+    const file = render("frontend");
+
+    // The output is the app. Skipping it ships an image that starts and 404s
+    assert.ok(file.includes("COPY --from=builder /app/.next/standalone /app"));
+    // As is what the server serves for every chunk it built
+    assert.ok(file.includes("COPY --from=builder /app/.next/static /app/.next/static"));
+
+    // public is whatever the repository put there, and plenty have none
+    assert.ok(file.includes("COPY --from=builder /app/publi[c] /app/public"));
+    // A lockfile is the package manager's to complain about, in its own words
+    assert.ok(file.includes("COPY yarn.loc[k] /app/yarn.lock"));
+
+    // The checkout itself, which is the build having a source at all
+    assert.ok(file.includes("COPY . /app"));
   });
 
   it("exposes the port the topology assigned and sets the entrypoint", () => {
@@ -96,6 +116,29 @@ describe("the rendered Dockerfile", () => {
 
   it("strips the upload token from the shipped environment file", () => {
     assert.match(render("backend"), /sed -i '\/\^SENTRY_AUTH_TOKEN=\/d'/);
+  });
+
+  // What apk cannot install: a global npm package, a directory a package does
+  // not create. Below the packages and above the output, so a new commit does
+  // not pay for them again
+  it("runs the runtime steps between the packages and the output", () => {
+    const app = config.apps.find((item) => item.name === "backend")!;
+    const target = topology.apps.find((item) => item.name === "backend")!;
+
+    const file = renderDockerfile(
+      { ...app.build, runtimePackages: ["curl"], runtimeSteps: ["npm install -g pm2"] },
+      {
+        caches: target.caches,
+        port: target.port,
+        release: "da2a148",
+        environment: "staging",
+        envSecret: "backend-env",
+        fileSecrets: {},
+      },
+    );
+
+    assert.ok(at(file, "apk add --no-cache curl") < at(file, "npm install -g pm2"));
+    assert.ok(at(file, "npm install -g pm2") < at(file, "COPY --from=builder"));
   });
 });
 
@@ -128,7 +171,7 @@ describe("an app in a directory of its own", () => {
   it("installs at the repository root, not in the app", () => {
     const file = rendered("apps/web");
 
-    assert.ok(file.includes("COPY package.json /app/package.json"));
+    assert.ok(file.includes("COPY package.jso[n] /app/package.json"));
     assert.ok(file.includes("target=/app/node_modules"));
   });
 
@@ -136,9 +179,39 @@ describe("an app in a directory of its own", () => {
     const file = rendered("apps/web");
 
     assert.ok(file.includes("COPY --from=builder /app/apps/web/.next/standalone /app"));
-    assert.ok(file.includes("COPY --from=builder /app/apps/web/.next/static /app/.next/static"));
-    assert.ok(file.includes("COPY --from=builder /app/apps/web/public /app/public"));
     assert.ok(file.includes("target=/app/apps/web/.next/cache"));
+  });
+
+  // The standalone tree traces from the workspace root, so it arrives holding
+  // apps/web/server.js rather than server.js. Landing what it carries at the
+  // top of the image would put the assets where the server does not look
+  it("lands what it carries where the nested output put the app", () => {
+    const file = rendered("apps/web");
+
+    assert.ok(file.includes("/app/apps/web/.next/static /app/apps/web/.next/static"));
+    assert.ok(file.includes("/app/apps/web/publi[c] /app/apps/web/public"));
+    assert.match(file, /FROM node:22-alpine\nWORKDIR \/app\/apps\/web/);
+    assert.match(file, /CMD .*node server\.js/);
+  });
+
+  // An output that flattens the app to the top of the image is the ordinary
+  // case, and dir must not move anything in the runtime stage
+  it("lands it at the top when the output does not keep the layout", () => {
+    const spec = { ...config.apps[0]!.build, keepsLayout: false };
+    const target = topology.apps.find((item) => item.name === "frontend")!;
+
+    const file = renderDockerfile(spec, {
+      caches: target.caches,
+      port: target.port,
+      release: "da2a148",
+      environment: "staging",
+      envSecret: "frontend-env",
+      fileSecrets: {},
+      dir: "apps/web",
+    });
+
+    assert.ok(file.includes("/app/apps/web/.next/static /app/.next/static"));
+    assert.match(file, /FROM node:22-alpine\nWORKDIR \/app\n/);
   });
 
   it("writes the environment file where the app will read it", () => {
@@ -179,8 +252,16 @@ describe("a Next app that is not standalone", () => {
 
   // A cache mount is not in the image, so a runtime resolving its own
   // dependencies would find the directory empty
+  // A step after the build runs in the builder image with none of the mounts,
+  // so a node app's dependencies have to be a layer. Only the standalone tree,
+  // which carries its own copy, can afford them on a mount.
+  it("leaves a plain node app's own node_modules in the image", () => {
+    const app = config.apps.find((item) => item.name === "backend")!;
+    assert.ok(!app.build.caches.includes("app-modules"));
+  });
+
   it("keeps node_modules out of the cache so it ships", () => {
-    assert.ok(!rendered(false).includes("target=/app/node_modules"));
+    assert.ok(!rendered(false).includes("node_modules"));
     assert.ok(rendered(true).includes("target=/app/node_modules"));
   });
 
@@ -188,6 +269,33 @@ describe("a Next app that is not standalone", () => {
     const file = rendered(true);
 
     assert.ok(file.includes("COPY --from=builder /app/apps/web/.next/standalone /app"));
-    assert.match(file, /CMD .*node \/app\/server\.js/);
+    assert.match(file, /CMD .*node server\.js/);
+  });
+});
+
+// What BuildKit is allowed to read. Narrowing the release without narrowing
+// this would upload a node_modules the release says nothing about
+describe("the rendered dockerignore", () => {
+  it("holds back only git when the tree says what it ignores", () => {
+    const rendered = renderDockerignore();
+
+    assert.equal(rendered, ".git\n**/.git\n");
+  });
+
+  it("holds back everything and lets the named paths through", () => {
+    const rendered = renderDockerignore(["src", "package.json"]).split("\n");
+
+    assert.equal(rendered[0], "*");
+    assert.ok(rendered.includes("!src"));
+    assert.ok(rendered.includes("!package.json"));
+  });
+
+  // The last rule to match decides, so an included directory carrying a .git
+  // would bring it back into the context
+  it("excludes git after the exemptions, not before", () => {
+    const rendered = renderDockerignore(["src"]).split("\n");
+
+    assert.ok(rendered.indexOf(".git") > rendered.indexOf("!src"));
+    assert.ok(rendered.includes("**/.git"));
   });
 });

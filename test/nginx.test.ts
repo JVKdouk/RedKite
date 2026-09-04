@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
+import config from "./deployment.js";
 import { renderNginx, topologyFor } from "../src/index.js";
 
 // The configuration a hand-written template produced, kept as a file rather

@@ -1,9 +1,11 @@
 import { build, type BuildContext, type BuildResult } from "./build.js";
+import { assertCheckable, runChecks } from "./checks.js";
+import { environmentOf } from "./config.js";
 import { Docker } from "./docker.js";
 import { healthcheck, type HealthDeps } from "./health.js";
 import type { Host } from "./host.js";
+import { localHost } from "./localHost.js";
 import { silent, type Log } from "./log.js";
-import { renderNginx } from "./nginx.js";
 import {
   defineStep,
   merge,
@@ -13,19 +15,23 @@ import {
   type BuiltApp,
   type Context,
   type Finished,
+  type Plan,
   type Prepared,
   type Released,
+  type Run,
   type Start,
 } from "./pipeline.js";
 import { readEnv, readRef, type SecretStores } from "./secrets/refs.js";
 import { ensureService } from "./services/ensure.js";
+import { plannedServices } from "./services/planned.js";
 import { topologyFor, type AppTopology, type Topology } from "./topology.js";
-import type { AppSpec, Deployment, ServiceSpec } from "./types.js";
+import type { AppSpec, Deployment } from "./types.js";
 
-// Blue-green, as the four steps redkite puts in the pipeline. The order is the
-// whole contract: bring the host up, build everything, move addresses, check,
-// revert or stop. Work that has to happen while the old containers still serve,
-// a migration among it, is a step at swap:before rather than anything here.
+// The runs redkite offers, and the steps it supplies to them. A deploy is
+// blue-green: bring the host up, build everything, move addresses, check,
+// revert or stop. A verify stops after the build and runs what the apps declare
+// instead of swapping, which is the same host and the same images without the
+// half of it that touches what is serving.
 //
 // Nothing here is privileged. Each of these is an ordinary step at an ordinary
 // point, and a deployment that registers its own at the same point replaces it.
@@ -37,13 +43,28 @@ export type DeployOptions = {
   host: Host;
   // One store per provider named by a ref in the config
   secrets: SecretStores;
-  health: Omit<HealthDeps, "probe">;
+  // How the probe waits between attempts. Absent means a real wait, which is
+  // what everything but a test wants
+  health?: Omit<HealthDeps, "probe">;
   log?: Log;
   // Prints what each build wrote, line by line as it runs
   verbose?: boolean;
+  // Stops the run. Whatever command is in flight is killed, and the pipeline
+  // unwinds through its own failure path rather than through an exit
+  signal?: AbortSignal;
 };
 
 export async function deploy(options: DeployOptions): Promise<Finished> {
+  return await start("deploy", options);
+}
+
+// The same host, the same services and the same images, stopping where a deploy
+// would start moving addresses. What runs instead is what each app declares
+export async function verify(options: DeployOptions): Promise<Finished> {
+  return await start("verify", options);
+}
+
+async function start(run: Run, options: DeployOptions): Promise<Finished> {
   const log = options.log ?? silent;
 
   const setting: Omit<Context, "task"> = {
@@ -54,20 +75,43 @@ export async function deploy(options: DeployOptions): Promise<Finished> {
     docker: new Docker(options.host),
     secrets: options.secrets,
     log,
+    run,
   };
 
   const steps = merge(supplied(options), options.config.steps ?? []);
-  return await runPipeline(steps, setting);
+  return await runPipeline(run, steps, setting, options.signal);
 }
 
-// The four redkite puts in the pipeline, in the order it puts them
+// Every step redkite supplies, in the order the phases name. A run walks the
+// phases it has, so the ones it does not are never ordered in
 function supplied(options: DeployOptions): AnyStep[] {
   return [
     defineStep("setup", prepare),
-    defineStep("build", (input, context) => compile(input, context, options.verbose ?? false)),
-    defineStep("swap", (input, context) => release(input, context, options.health)),
+    defineStep("build", (input, context) =>
+      compile(input, context, options.verbose ?? false, options.signal),
+    ),
+    defineStep("verify", runChecks, assertCheckable),
+    defineStep(
+      "swap",
+      (input, context) => release(input, context, options.health ?? { sleep: wait }),
+      assertPublishable,
+    ),
     defineStep("cleanup", finish),
   ];
+}
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// A deploy publishes the proxy on a port, and an environment written for verify
+// alone has no reason to name one. Checked before the run so the mistake lands
+// before a build rather than on a proxy nobody outside can reach
+function assertPublishable(plan: Plan) {
+  if (environmentOf(plan.config, plan.environment)?.publicPort) return;
+
+  throw new Error(
+    `${plan.environment} names no publicPort, so a deploy has nothing to publish ` +
+      "the proxy on. Only a verify run goes without one",
+  );
 }
 
 // The network and the services, which outlive a run and are only built when
@@ -90,23 +134,53 @@ async function compile(
   input: Prepared,
   context: Context,
   verbose: boolean,
+  signal?: AbortSignal,
 ): Promise<Built> {
-  return { ...input, apps: (await buildAll(context, verbose)).map(describe) };
+  // One checkout directory for every app, opened here so the build step owns
+  // its lifetime rather than the process
+  const here = buildsHere(context) ? await localHost({ signal }) : undefined;
+
+  try {
+    return { ...input, apps: (await buildAll(context, verbose, here)).map(describe) };
+  } finally {
+    await here?.close?.();
+  }
+}
+
+// Building here and deploying here are the same daemon, so shipping would be a
+// save and a load of an image that never moved. An app built from a path on
+// this machine has no say in it: the source is here, so the build is too
+function buildsHere(context: Context) {
+  const environment = environmentOf(context.config, context.environment);
+  if (!environment?.host?.bastion) return false;
+
+  return environment.buildOn === "local" || context.config.apps.some((app) => app.path);
 }
 
 async function release(
   input: Built,
   context: Context,
-  health: DeployOptions["health"],
+  health: Omit<HealthDeps, "probe">,
 ): Promise<Released> {
   const { docker, task, topology } = context;
   const apps = context.config.apps.map((app) => appOf(topology, app.name));
+
+  // Keyed by name rather than by index: appOf resolves the topology, and two
+  // lists walked in step is a bug waiting for someone to reorder one
+  const environments = new Map(
+    context.config.apps.map((app) => [app.name, app.environment ?? {}]),
+  );
 
   task.detail("retiring the running containers");
   await Promise.all(apps.map((app) => retire(docker, topology, app)));
 
   task.detail("creating the new ones");
-  await Promise.all(apps.map((app) => create(docker, topology, app)));
+
+  await Promise.all(
+    apps.map((app) =>
+      create(docker, topology, app, environments.get(app.name)),
+    ),
+  );
 
   task.detail("starting them");
   await Promise.all(apps.map((app) => docker.container.start(app.container)));
@@ -117,10 +191,22 @@ async function release(
     context.log.fail("Health checks failed, reverting");
     await Promise.all(apps.map((app) => revert(docker, topology, app)));
 
-    return { ...input, ok: false, released: [], reverted: apps.map((app) => app.container) };
+    return {
+      ...input,
+      ok: false,
+      released: [],
+      reverted: apps.map((app) => app.container),
+      checked: [],
+    };
   }
 
-  return { ...input, ok: true, released: apps.map((app) => app.container), reverted: [] };
+  return {
+    ...input,
+    ok: true,
+    released: apps.map((app) => app.container),
+    reverted: [],
+    checked: [],
+  };
 }
 
 // A build leaves its image on the host rather than sending one, so without this
@@ -150,7 +236,7 @@ function describe({ app, result }: Built0): BuiltApp {
   };
 }
 
-async function checkAll(context: Context, health: DeployOptions["health"]) {
+async function checkAll(context: Context, health: Omit<HealthDeps, "probe">) {
   const { docker, log, topology } = context;
 
   const results = await Promise.all(
@@ -172,44 +258,34 @@ async function checkAll(context: Context, health: DeployOptions["health"]) {
   return !results.includes(false);
 }
 
+// The proxy is one of these, derived rather than listed. What each should be
+// is worked out in one place, so a plan reports drift against the same shape a
+// deploy converges to
 async function ensureServices(context: Context) {
-  const { config, topology } = context;
+  const planned = plannedServices(context.config, context.topology, context.run);
 
-  const proxy = ensureService(router(config), topology.router, {
-    ...context,
-    files: {
-      "/etc/nginx/conf.d/default.conf": renderNginx(topology, config.maxBodySize),
-    },
-    publish: topology.publicPort,
-  });
+  return await Promise.all(
+    planned.map(async (item) => {
+      await ensureService(item.spec, item.service, {
+        ...context,
+        files: item.files,
+        publish: item.publish,
+      });
 
-  const rest = config.services.map(async (spec) => {
-    const service = topology.services.find((item) => item.name === spec.name);
-    if (!service) throw new Error(`No topology for service ${spec.name}`);
-
-    await ensureService(spec, service, { ...context, files: spec.files ?? {} });
-    return service.container;
-  });
-
-  await proxy;
-  return [topology.router.container, ...(await Promise.all(rest))];
-}
-
-// Not something a deployment lists. Apps carry routes, routes need a proxy to
-// resolve them, and the one that renders them is this
-function router(config: Deployment): ServiceSpec {
-  return {
-    name: "nginx",
-    image: config.proxyImage ?? "nginx:stable",
-    restart: "always",
-  };
+      return item.service.container;
+    }),
+  );
 }
 
 type Built0 = { app: AppSpec; result: BuildResult };
 
-async function buildAll(context: Context, verbose: boolean): Promise<Built0[]> {
+async function buildAll(
+  context: Context,
+  verbose: boolean,
+  here?: Host,
+): Promise<Built0[]> {
   const { config, log, topology } = context;
-  const environment = config.environments?.[context.environment];
+  const environment = environmentOf(config, context.environment);
 
   if (!environment) throw new Error(`Unknown environment ${context.environment}`);
 
@@ -219,14 +295,15 @@ async function buildAll(context: Context, verbose: boolean): Promise<Built0[]> {
 
       try {
         const buildContext: BuildContext = {
-          host: context.host,
-          docker: context.docker,
+          host: here ?? context.host,
+          docker: here ? new Docker(here) : context.docker,
+          deliver: here && { host: context.host, docker: context.docker },
           env: await readEnv(app.secrets, context.secrets),
           files: await resolveFiles(app, context.secrets),
           branch: environment.branch,
           environment: context.environment,
           detail: task.detail,
-          output: verbose ? (line) => log(`  ${app.name} │ ${line}`) : undefined,
+          output: task.line,
         };
 
         const result = await build(app, appOf(topology, app.name), buildContext);
@@ -260,7 +337,12 @@ async function retire(docker: Docker, topology: Topology, app: AppTopology) {
   await docker.container.rename(app.container, app.retired);
 }
 
-async function create(docker: Docker, topology: Topology, app: AppTopology) {
+async function create(
+  docker: Docker,
+  topology: Topology,
+  app: AppTopology,
+  environment: Record<string, string> = {},
+) {
   const builder = docker.container
     .builder()
     .name(app.container)
@@ -276,6 +358,7 @@ async function create(docker: Docker, topology: Topology, app: AppTopology) {
   }
 
   for (const volume of app.volumes) builder.volume(volume.volume, volume.mountPath);
+  for (const [name, value] of Object.entries(environment)) builder.env(name, value);
 
   await builder.create();
 }

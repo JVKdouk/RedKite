@@ -1,4 +1,4 @@
-import config from "../examples/acme/redkite.config.js";
+import config from "../test/deployment.js";
 import { deploy, healthcheck, renderDockerfile, topologyFor } from "../src/index.js";
 import { fakeHost } from "../test/fakes.js";
 

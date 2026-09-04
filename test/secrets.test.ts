@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
-import { bitwarden, listRefs, readEnv, readRef } from "../src/index.js";
+import config from "./deployment.js";
+import { bitwarden, bitwardenStore, listRefs, readEnv, readRef } from "../src/index.js";
 import type { SecretStores } from "../src/index.js";
 
 const stores: SecretStores = {
@@ -71,5 +74,39 @@ describe("secret refs", () => {
 
     // Each names a different item, or one of them is silently unreachable
     assert.equal(new Set(refs.map((ref) => ref.id)).size, refs.length);
+  });
+});
+
+
+// The CLI is resolved once and then called directly. npx resolved the package
+// again on every invocation, and unlocking is three commands plus one per secret
+describe("reaching the Bitwarden CLI", () => {
+  const calls = join(tmpdir(), `redkite-bw-calls-${process.pid}`);
+
+  after(async () => {
+    await rm(calls, { force: true });
+  });
+
+  it("calls the binary it was given, and reads each item once", async () => {
+    process.env["BW_CALLS"] = calls;
+    process.env["REDKITE_BW_BIN"] = new URL("./fixtures/bw", import.meta.url).pathname;
+
+    const store = await bitwardenStore({
+      clientId: "id",
+      clientSecret: "secret",
+      password: "password",
+    });
+
+    const first = await store.read("item");
+    const second = await store.read("item");
+
+    assert.equal(first, "A=1\n");
+    assert.equal(second, first);
+
+    const issued = (await readFile(calls, "utf8")).trim().split("\n");
+
+    assert.deepEqual(issued.filter((line) => line.startsWith("get")).length, 1);
+    assert.ok(issued.some((line) => line.startsWith("unlock")));
+    assert.ok(!issued.some((line) => line.includes("npx")));
   });
 });

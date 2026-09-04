@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
+import config from "./deployment.js";
 import type { Deployment } from "../src/index.js";
-import { bitwarden, deploy, migrate, postgres, topologyFor } from "../src/index.js";
+import {
+  bitwarden,
+  deploy,
+  fingerprintOf,
+  migrate,
+  plannedServices,
+  postgres,
+  topologyFor,
+} from "../src/index.js";
 import { fakeHost } from "./fakes.js";
 
 const topology = topologyFor(config, "staging");
@@ -24,11 +32,22 @@ const secrets = {
   },
 };
 
+// What the deployment would create each service from, so a test can say the
+// running one matches it or was made from something else
+function fingerprints() {
+  const entries = plannedServices(config, topology).map(
+    (item) => [item.service.container, fingerprintOf(item, topology)] as const,
+  );
+
+  return Object.fromEntries(entries);
+}
+
 async function run(options: {
   existing?: string[];
   bodies?: Record<string, string>;
+  specs?: Record<string, string>;
 } = {}) {
-  const host = fakeHost({ existing: options.existing });
+  const host = fakeHost({ existing: options.existing, specs: options.specs });
 
   for (const [container, body] of Object.entries(options.bodies ?? HEALTHY)) {
     host.respond(container, body);
@@ -99,7 +118,7 @@ describe("deploy", () => {
       `network connect --ip ${back.retiredAddress} ${topology.network} ${back.container}`,
       `container rename ${back.container} ${back.retired}`,
       // Only then does the name and the live address belong to the new one
-      `container create --name ${back.container} --hostname ${back.container} -v ${back.volumes[0]!.volume}:/app/logs --network ${topology.network} --add-host ${front.container}:${front.currentAddress} --add-host ${front.retired}:${front.retiredAddress} --add-host redis:${topology.services[0]!.address} --ip ${back.currentAddress} --restart unless-stopped ${back.container}`,
+      `container create --name ${back.container} --hostname ${back.container} -v ${back.volumes[0]!.volume}:/app/logs --network ${topology.network} --add-host ${front.container}:${front.currentAddress} --add-host ${front.retired}:${front.retiredAddress} --add-host redis:${topology.services[0]!.address} -e PM2_HOME=/app/logs/pm2 --ip ${back.currentAddress} --restart unless-stopped ${back.container}`,
       `container start ${back.container}`,
     ]);
   });
@@ -151,6 +170,22 @@ describe("deploy", () => {
     assert.match(migration, new RegExp(`^run --rm --network ${topology.network} `));
     assert.ok(migration.includes(`--add-host redis:${topology.services[0]!.address}`));
     assert.ok(!migration.includes("--network host"));
+  });
+
+  // A verify environment names no port, and asking one to deploy would create
+  // a proxy nobody outside can reach. Refused before anything is built
+  it("refuses to deploy an environment that publishes nothing", async () => {
+    const unpublished: Deployment = {
+      ...config,
+      environment: {
+        branch: "pull-request",
+        subnet: "172.254.0",
+        host: { bastion: "deploy@staging.acme.example" },
+      },
+    };
+
+    const host = await refuses(unpublished, /names no publicPort/);
+    assert.deepEqual(host.commands, [], "and the host is untouched");
   });
 
   it("refuses a migration tunnelled through anything but the deploy host", async () => {
@@ -250,12 +285,54 @@ describe("deploy", () => {
 
     assert.ok(first.host.commands.some((c) => c.includes(`--name ${redis.container}`)));
 
-    const second = await run({ existing: [redis.container] });
+    const second = await run({ existing: [redis.container], specs: fingerprints() });
     const created = second.host.commands.filter((c) =>
       c.includes(`--name ${redis.container}`),
     );
 
     assert.deepEqual(created, []);
+  });
+
+  // A service is adopted because it is the one the deployment describes, not
+  // because something with the right name is there. A rendered config or a
+  // published port only reaches a container that is created
+  it("recreates a service that was created from something else", async () => {
+    const proxy = topology.router;
+    const stale = { ...fingerprints(), [proxy.container]: "0000000000000000" };
+
+    const { host } = await run({ existing: [proxy.container], specs: stale });
+
+    assert.ok(host.commands.includes(`container stop ${proxy.container}`));
+    assert.ok(host.commands.includes(`container rm ${proxy.container}`));
+    assert.ok(host.commands.some((c) => c.includes(`--name ${proxy.container}`)));
+  });
+
+  // One created by hand, or before redkite recorded what it created from. It
+  // cannot be said to match, so it is rebuilt once rather than trusted forever
+  it("recreates a service it does not recognise", async () => {
+    const redis = topology.services.find((service) => service.name === "redis")!;
+    const { host } = await run({ existing: [redis.container] });
+
+    assert.ok(host.commands.some((c) => c.includes(`--name ${redis.container}`)));
+  });
+
+  // The whole point: changing what nginx publishes has to reach the container
+  it("recreates the proxy when the published port changes", async () => {
+    const moved = {
+      ...config,
+      environments: {
+        ...config.environments,
+        staging: { ...config.environments.staging, publicPort: 4100 },
+      },
+    };
+
+    const before = fingerprints()[topology.router.container]!;
+    const after = fingerprintOf(
+      plannedServices(moved, topologyFor(moved, "staging"))[0]!,
+      topologyFor(moved, "staging"),
+    );
+
+    assert.notEqual(before, after);
   });
 
   // The proxy is derived from the app list rather than listed beside redis,

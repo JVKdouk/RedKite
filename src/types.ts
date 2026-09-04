@@ -5,12 +5,19 @@ import type { AnyStep } from "./pipeline.js";
 // deploy to.
 
 export type Environment = {
+  // Where the images are built. "host" is the deploy host, which is where they
+  // are needed and costs nothing to move them. "local" builds on this machine
+  // and ships the result, for a host too small to compile on. Ignored when the
+  // deploy host is already this machine
+  buildOn?: "host" | "local";
   // Git ref the apps are built from, the only per-environment source difference
   branch: string;
   // First three octets, the allocator owns the fourth. One /16 per environment
   subnet: string;
-  // Port published on the host, the only port a person outside ever types
-  publicPort: number;
+  // Port published on the host, the only port a person outside ever types.
+  // A verify environment has none: nothing serves in one, so there is no proxy
+  // to publish and no traffic to publish it for
+  publicPort?: number;
   // The machine the containers run on, and which builds the images. Absent
   // means this one
   host?: DeployHost;
@@ -19,6 +26,12 @@ export type Environment = {
   // use, and whose address is what differs between environments
   extraHosts?: Record<string, string>;
 };
+
+// Where a step's container is attached. "host" is the deploy host's own stack,
+// which reaches whatever that machine already reaches. "deployment" is the
+// network the apps and services run on, which is what resolves a service by
+// the alias the apps know it by
+export type StepNetwork = "host" | "deployment" | "none" | { named: string };
 
 export type DeployHost = {
   // SSH destination, user@address
@@ -64,6 +77,10 @@ export type ServiceSpec = {
   volumes?: Record<string, string>;
 };
 
+// A directory carried into the runtime image. Optional means the build is
+// allowed not to have produced it, which is a claim about that directory alone
+export type CarryPath = string | { path: string; optional: true };
+
 export type BuildSpec = {
   // Which preset produced this, carried for diagnostics rather than dispatch
   preset: string;
@@ -86,9 +103,16 @@ export type BuildSpec = {
   steps: string[];
   // Directory in the builder that becomes the root of the runtime image
   output: string;
-  // Extra builder directories copied into the runtime image beside the output
-  carry: string[];
-  // Process the runtime image starts, as argv rather than a shell string
+  // Extra builder directories copied into the runtime image beside the output.
+  // A bare path has to exist, and a build whose output is missing one of these
+  // is a build that failed without saying so
+  carry: CarryPath[];
+  // Whether the output tree keeps the repository's own directory structure.
+  // Next's standalone build does: it traces from the workspace root, so an app
+  // in a subdirectory arrives under that subdirectory rather than at the top
+  keepsLayout?: boolean;
+  // Process the runtime image starts, as argv rather than a shell string. It
+  // runs at the app's root, so a path relative to that survives dir
   entrypoint: string[];
   // Cache names mounted into the builder, keyed per app and environment so two
   // apps or two environments never share one
@@ -100,6 +124,9 @@ export type BuildSpec = {
   aptPackages: string[];
   // Packages the runtime image needs, typically curl for the health probe
   runtimePackages: string[];
+  // Shell commands run in the runtime image, for what a package manager cannot
+  // install. Above the output copy, so a new commit does not repeat them
+  runtimeSteps: string[];
   // Uploads source maps during the build, then deletes them from the image
   sourcemaps?: SourcemapSpec;
 };
@@ -110,6 +137,21 @@ export type SourcemapSpec = {
   // Env var stripped from the shipped file, it is a build-time credential and
   // has no reason to travel inside the image
   stripFromImage: string;
+};
+
+// How a build is decided to work. The commands run in the builder image, which
+// is the one holding the test runner and the dev dependencies, so nothing has
+// to be installed to check a release that is already compiled
+export type VerifySpec = {
+  // Shell commands run in order. A non-zero exit fails the run, and the first
+  // is usually whatever brings the test database to the schema the tests want
+  steps: string[];
+  // Defaults to the deployment network, which is what resolves a service by
+  // the alias the app already uses: postgres answers at postgres
+  network?: StepNetwork;
+  // Settings the checks need beside the ones the image was built with, a test
+  // database url among them
+  environment?: Record<string, string>;
 };
 
 export type HealthSpec = {
@@ -130,8 +172,19 @@ export type AppSpec = {
   // Identifies the app. Becomes its container name, cache keys, volume names
   // and nginx upstream, so changing it orphans everything named after it
   name: string;
-  // Clone URL, fetched over the forwarded SSH agent rather than with a token
-  repo: string;
+  // Clone URL, fetched over the forwarded SSH agent rather than with a token.
+  // Exactly one of this and path: the source is either cloned or already here
+  repo?: string;
+  // A directory on this machine, built as it stands rather than cloned. What a
+  // CI job already checked out is one, and so is the copy you are editing.
+  // Relative to the deployment file. The branch an environment names is not
+  // read for one of these: what is on disk is what ships
+  path?: string;
+  // What of that directory goes into the build, relative to it. Only for a
+  // path, and only needed where git cannot answer: a work tree's .gitignore
+  // already says it. Given here it wins, which is how a repository is narrowed
+  // to the one app inside it
+  include?: string[];
   // Nginx location this app answers. "/" is the catch-all, and a mounted route
   // such as "/api/" has its prefix stripped before the request is proxied
   route: string;
@@ -148,8 +201,14 @@ export type AppSpec = {
   build: BuildSpec;
   // What has to be true before traffic is allowed to move to the new container
   health: HealthSpec;
+  // What has to be true for the build to be worth deploying at all. Only
+  // `redkite verify` runs these, so a deploy never pays for them
+  verify?: VerifySpec;
   // Volume name to container path, for state that outlives a deploy
   volumes?: Record<string, string>;
+  // Plain environment for the running container, for what is configuration
+  // rather than a credential. Secrets come from the vault instead
+  environment?: Record<string, string>;
   // Container path to the item whose contents land there, for credentials that
   // have to be a file rather than an environment variable
   files?: Record<string, SecretRef>;
@@ -159,9 +218,13 @@ export type Deployment = {
   // Prefixes every container, network and volume, and separates one project's
   // objects from another's on a shared host
   project: string;
-  // Selected on the command line. The key is threaded into every derived name,
-  // so there is exactly one place the environment can be wrong. Optional
-  // because an environment may live in redkite.<name>.config.ts instead
+  // Overrides whichever one was selected, for a deployment that has only one
+  // and no reason to keep it in a file. Two of them is two files
+  environment?: Environment;
+  // Filled by the loader from the redkite.<name>.config.ts files beside this
+  // one, and from anything package.json names. A deployment does not declare
+  // them: the thing that differs between staging and production is a file, not
+  // a key several levels down a literal
   environments?: Record<string, Environment>;
   // Largest request body the proxy accepts before answering 413
   maxBodySize?: string;

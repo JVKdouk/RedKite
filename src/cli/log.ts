@@ -1,6 +1,7 @@
-import type { Log, Task } from "../log.js";
+import type { Task } from "../log.js";
 
-import { Live, since } from "./live.js";
+import { elapsed as took } from "./screen.js";
+import { createViewer, type Viewer } from "./viewer.js";
 
 // What a deploy prints. The engine's own trace is a build graph with span ids
 // and manifest resolution in it, which answers a question nobody deploying has.
@@ -12,11 +13,37 @@ const DONE = 32;
 
 const started = Date.now();
 
-export function createLog(): Log {
-  const interactive = colours(process.stdout);
-  const live = new Live(process.stdout, interactive, () =>
-    interactive ? paint(elapsed(), STAMP) : elapsed(),
-  );
+export type LogOptions = {
+  verbose?: boolean;
+  full?: boolean;
+  onQuit?: () => void;
+};
+
+// A terminal gets the step viewer. Anything else, a pipe, a CI log or --full,
+// gets one line per event, because there is nothing there to redraw
+export function createLog(options: LogOptions = {}): Viewer {
+  if (viewable(process.stdout, process.stdin, options)) {
+    return createViewer(process.stdout, process.stdin, { onQuit: options.onQuit });
+  }
+
+  // --full is the reason to print a step's own output without asking for the
+  // host commands beside it, which is what --verbose adds
+  return Object.assign(plainLog(options.verbose === true || options.full === true), {
+    close: () => {},
+  });
+}
+
+function viewable(
+  stream: NodeJS.WriteStream,
+  input: NodeJS.ReadStream,
+  options: LogOptions,
+) {
+  if (options.full || process.env["REDKITE_PLAIN"]) return false;
+  return stream.isTTY === true && input.isTTY === true;
+}
+
+function plainLog(lines: boolean) {
+  const live = { write: (line: string) => process.stdout.write(line) };
 
   const write = (stream: NodeJS.WriteStream, message: string, colour?: number) => {
     const painted = colours(stream);
@@ -35,11 +62,7 @@ export function createLog(): Log {
   const info = (message: string) => write(process.stdout, message);
 
   const step = (label: string): Task => {
-    // The live row is the announcement. Printing one as well would leave the
-    // same step on screen twice, once frozen and once ticking
-    if (!interactive) write(process.stdout, label);
-
-    const id = live.start(label);
+    write(process.stdout, label);
     const started = Date.now();
 
     let current: { text: string; at: number } | undefined;
@@ -53,26 +76,25 @@ export function createLog(): Log {
       current = undefined;
     };
 
-    // Without a block to redraw, a sub-step is only visible if it is printed
     const trace = (message: string) => {
-      if (!interactive) return write(process.stdout, `  ${label}: ${message}`);
-
       settle();
       current = { text: message, at: Date.now() };
-      live.update(id, message);
+      write(process.stdout, `  ${label}: ${message}`);
     };
 
     return {
       detail: trace,
+      // In full, never clipped: this is the view for reading what a build said
+      line: (message: string) => {
+        if (lines) write(process.stdout, `  ${label} | ${message}`);
+      },
       done: (message?: string) => {
         settle();
-        live.stop(id);
         const suffix = message ? `: ${message}` : "";
         write(process.stdout, `${label}${suffix} (${since(started)})`, DONE);
       },
       fail: (message: string) => {
         settle();
-        live.stop(id);
         write(process.stderr, `${message} (${since(started)})`, FAIL);
       },
     };
@@ -99,12 +121,11 @@ function colours(stream: NodeJS.WriteStream) {
 }
 
 function elapsed() {
-  const seconds = Math.floor((Date.now() - started) / 1000);
-  return `[${pad(Math.floor(seconds / 60))}:${pad(seconds % 60)}]`;
+  return `[${took(Date.now(), started, true)}]`;
 }
 
-function pad(value: number) {
-  return String(value).padStart(2, "0");
+function since(at: number) {
+  return took(Date.now(), at);
 }
 
 const TAIL = 20;

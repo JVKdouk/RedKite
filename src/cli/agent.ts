@@ -1,15 +1,16 @@
 import { execFileSync } from "node:child_process";
 
-import type { Log } from "../log.js";
-
 // Cloning private repositories and opening the tunnel both go through the
 // agent, so a deploy without one fails halfway rather than at the start
 
-export function requireAgent(log: Log) {
+// A plain writer rather than a Log, because this runs before the view opens:
+// ssh-add may ask for a passphrase, and it cannot ask through a screen
+// something else is drawing
+export function requireAgent(warn: (message: string) => void) {
   const existing = process.env["SSH_AUTH_SOCK"];
   if (existing) return existing;
 
-  log.warn("No SSH agent, starting one");
+  warn("No SSH agent, starting one");
 
   const output = execFileSync("ssh-agent", ["-s"], { encoding: "utf8" });
   const socket = output.match(/SSH_AUTH_SOCK=([^;]+);/)?.[1];

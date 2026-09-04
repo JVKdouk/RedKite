@@ -12,24 +12,9 @@ export default defineDeployment({
   project: "acme",
   maxBodySize: "1024M",
 
-  // Selected on the command line, threaded into every container, network,
-  // volume and cache name. There is one place the environment can be wrong
-  environments: {
-    // The host builds as well as runs, so this is also the machine the images
-    // are compiled on and the repositories are cloned to
-    staging: {
-      branch: "staging",
-      subnet: "172.255.0",
-      publicPort: 4000,
-      host: { bastion: "deploy@staging.acme.example" },
-    },
-    production: {
-      branch: "master",
-      subnet: "172.254.0",
-      publicPort: 80,
-      host: { bastion: "deploy@acme.example" },
-    },
-  },
+  // The environments are the files beside this one, one each. Selecting one on
+  // the command line threads its name into every container, network, volume and
+  // cache name, so there is one place the environment can be wrong
 
   // Hung before the swap, so it runs while the old containers still serve. A
   // failure here throws and nothing retires
@@ -65,6 +50,7 @@ export default defineDeployment({
       // An array merges in order, so a shared ref could sit ahead of this one
       secrets: bitwarden("00000000-0000-4000-8000-000000000002"),
       volumes: { logs: "/app/logs" },
+      environment: { PM2_HOME: "/app/logs/pm2" },
       files: {
         "/app/service-account.json": bitwarden("00000000-0000-4000-8000-000000000003"),
       },
@@ -90,6 +76,13 @@ export default defineDeployment({
         path: "/health",
         expect: (body) =>
           body.status === "up" && body.redis === "up" && body.database === "up",
+      },
+
+      // Only `redkite verify` runs these. They run in the builder image, which
+      // still has the test runner in it, on the network redis answers on
+      verify: {
+        steps: ["yarn db:migrate", "yarn test:integration"],
+        environment: { NODE_ENV: "test" },
       },
     },
   ],

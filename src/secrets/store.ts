@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,10 @@ export type BitwardenCredentials = {
 // Used when bw is not already on PATH. Pinned, because an unpinned CLI is a
 // different program on a machine that has never run a deploy before
 const CLI = "@bitwarden/cli@2026.4.2";
+
+// Where that install lands. Keyed by the pinned version, so bumping it installs
+// beside the old one rather than over a vault command that is mid-flight
+const CLIS = join(homedir(), ".cache", "redkite", "cli");
 
 export async function bitwardenStore(
   credentials: BitwardenCredentials,
@@ -94,8 +99,8 @@ export async function bitwardenStore(
 
 type Cli = { file: string; prefix: string[] };
 
-// A machine with the CLI installed pays nothing. One without it gets the pinned
-// version through npx, which is still cheaper than a container per deploy
+// A machine with the CLI installed pays nothing. One without it installs the
+// pinned version once, rather than resolving it again on every call below
 async function resolveCli(detail: (message: string) => void): Promise<Cli> {
   const override = process.env["REDKITE_BW_BIN"];
   if (override) return { file: override, prefix: [] };
@@ -107,8 +112,29 @@ async function resolveCli(detail: (message: string) => void): Promise<Cli> {
 
   if (found) return { file: "bw", prefix: [] };
 
-  detail(`fetching ${CLI}`);
-  return { file: "npx", prefix: ["--yes", CLI] };
+  return { file: await install(detail), prefix: [] };
+}
+
+// npx resolves the package again on every invocation, and unlocking a vault is
+// three commands plus one per secret. That was most of a second, six times over
+async function install(detail: (message: string) => void) {
+  const directory = join(CLIS, CLI.replace(/[^\w.]+/g, "-"));
+  const binary = join(directory, "node_modules", ".bin", "bw");
+
+  if (existsSync(binary)) return binary;
+
+  detail(`installing ${CLI}, once for this machine`);
+  await mkdir(directory, { recursive: true });
+
+  await run(
+    "npm",
+    ["install", "--prefix", directory, "--no-save", "--no-audit", "--no-fund", CLI],
+    { maxBuffer: 32 * 1024 * 1024 },
+  ).catch((error: unknown) => {
+    throw new Error(`Could not install ${CLI}: ${messageOf(error)}`);
+  });
+
+  return binary;
 }
 
 function messageOf(error: unknown) {

@@ -1,12 +1,7 @@
+import { environmentOf } from "./config.js";
 import type { Built, Plan, Step } from "./pipeline.js";
 import type { Topology } from "./topology.js";
-import type { AppSpec } from "./types.js";
-
-// Where a step's container is attached. "host" is the deploy host's own stack,
-// which reaches whatever that machine already reaches. "deployment" is the
-// network the apps and services run on, which is what resolves a service by
-// the alias the apps know it by
-export type StepNetwork = "host" | "deployment" | "none" | { named: string };
+import type { AppSpec, StepNetwork } from "./types.js";
 
 // The flags that attach one. The deployment network carries the aliases too,
 // because a service answers to its alias rather than its container name, and a
@@ -75,7 +70,7 @@ function assertReachable(plan: Plan, options: MigrateOptions) {
   const app = plan.config.apps.find((item) => item.name === options.app);
   if (!app) throw new Error(`${options.app} names no app in this deployment`);
 
-  const bastion = plan.config.environments?.[plan.environment]?.host?.bastion;
+  const bastion = environmentOf(plan.config, plan.environment)?.host?.bastion;
   const tunnel = options.tunnel;
   if (!tunnel || tunnel.bastion === bastion) return;
 
@@ -86,13 +81,13 @@ function assertReachable(plan: Plan, options: MigrateOptions) {
   );
 }
 
-// A deployment may replace the build step, and the command has to run in an
-// image something actually produced
-function builderOf(input: Built, name: string) {
+// A deployment may replace the build step, and a command hung on the pipeline
+// has to run in an image something actually produced
+export function builderOf(input: Built, name: string) {
   const app = input.apps.find((item) => item.name === name);
   if (app?.builderTag) return app.builderTag;
 
-  throw new Error(`${name} migrates, but nothing built a builder image for it`);
+  throw new Error(`${name} has no builder image, so nothing can be run in it`);
 }
 
 type SentryOptions = { stripFromImage: string };

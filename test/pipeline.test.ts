@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
+import config from "./deployment.js";
 import type { AnyStep, Context, Finished, Hook, Released } from "../src/index.js";
 import {
   addressOf,
@@ -31,6 +31,7 @@ function setting(): Omit<Context, "task"> {
     docker: new Docker(host.host),
     secrets: {},
     log: silent,
+    run: "deploy",
   };
 }
 
@@ -48,7 +49,7 @@ function supplied(trace: string[]): AnyStep[] {
     }),
     defineStep("swap", (input) => {
       trace.push("swap");
-      return { ...input, ok: true, released: ["web"], reverted: [] };
+      return { ...input, ok: true, released: ["web"], reverted: [], checked: [] };
     }),
     defineStep("cleanup", (input) => {
       trace.push("cleanup");
@@ -79,7 +80,7 @@ describe("where a step runs", () => {
       record(trace, "cleanup:before:drain"),
     ];
 
-    await runPipeline(merge(supplied(trace), added), setting());
+    await runPipeline("deploy", merge(supplied(trace), added), setting());
 
     assert.deepEqual(trace, [
       "setup:before:check",
@@ -101,7 +102,7 @@ describe("where a step runs", () => {
   it("keeps the order a slot's steps were written in", async () => {
     const trace: string[] = [];
 
-    await runPipeline(
+    await runPipeline("deploy", 
       merge(supplied(trace), [
         record(trace, "swap:after:first"),
         record(trace, "swap:after:second"),
@@ -129,7 +130,7 @@ describe("a step at a point redkite already uses", () => {
       }),
     ]);
 
-    await runPipeline(steps, setting());
+    await runPipeline("deploy", steps, setting());
 
     assert.deepEqual(trace, ["setup", "mine", "swap", "cleanup"]);
   });
@@ -142,7 +143,7 @@ describe("a step at a point redkite already uses", () => {
       defineStep("cleanup", (input) => ({ ...input, removed: [], reclaimed: [] })),
     ]);
 
-    const result = await runPipeline(steps, setting());
+    const result = await runPipeline("deploy", steps, setting());
 
     assert.ok(!trace.includes("cleanup"));
     assert.deepEqual(result.reclaimed, []);
@@ -168,7 +169,7 @@ describe("what a step checks before the run", () => {
       run: (input) => input,
     };
 
-    await runPipeline(merge(supplied(trace), [checked]), setting());
+    await runPipeline("deploy", merge(supplied(trace), [checked]), setting());
 
     assert.equal(trace[0], "checked");
   });
@@ -184,7 +185,7 @@ describe("what a step checks before the run", () => {
     };
 
     await assert.rejects(
-      () => runPipeline(merge(supplied(trace), [broken]), setting()),
+      () => runPipeline("deploy", merge(supplied(trace), [broken]), setting()),
       /names no app/,
     );
 
@@ -204,7 +205,7 @@ describe("what a step is handed", () => {
       }),
     ];
 
-    await runPipeline(merge(supplied([]), added), setting());
+    await runPipeline("deploy", merge(supplied([]), added), setting());
 
     assert.deepEqual(seen[0]?.released, ["rewritten"]);
   });
@@ -217,7 +218,7 @@ describe("what a step is handed", () => {
       return input;
     });
 
-    await runPipeline(merge(supplied([]), [step]), setting());
+    await runPipeline("deploy", merge(supplied([]), [step]), setting());
 
     // The value grows rather than being replaced, so the last step still reads
     // the environment the run started with and the network setup brought up
@@ -234,7 +235,7 @@ describe("what a step is handed", () => {
       return input;
     });
 
-    await runPipeline(merge(supplied([]), [step]), setting());
+    await runPipeline("deploy", merge(supplied([]), [step]), setting());
 
     assert.equal(seen[0]?.topology.network, "acme-staging-network");
     assert.equal(seen[0]?.config.project, "acme");
@@ -253,7 +254,7 @@ describe("a step that throws", () => {
     ];
 
     await assert.rejects(
-      () => runPipeline(merge(supplied(trace), added), setting()),
+      () => runPipeline("deploy", merge(supplied(trace), added), setting()),
       /build:before:refuse/,
     );
 
@@ -267,7 +268,7 @@ describe("a step that throws", () => {
       throw new Error("the webhook is down");
     });
 
-    const error = await runPipeline(merge(supplied([]), [step]), setting()).catch(
+    const error = await runPipeline("deploy", merge(supplied([]), [step]), setting()).catch(
       (e: unknown) => e,
     );
 
@@ -278,6 +279,37 @@ describe("a step that throws", () => {
 
 // Checked where the config is defined, so a typo is a config that fails to load
 // rather than a deploy that stops half way with the host already changed
+// A run that is asked to stop unwinds through its own failure path, so the
+// caller's cleanup runs and the host does not keep a scratch directory
+describe("stopping a run", () => {
+  it("stops before the next step rather than inside one", async () => {
+    const trace: string[] = [];
+    const stopping = new AbortController();
+
+    const steps = merge(supplied(trace), [
+      defineStep("build:after:stop", (input) => {
+        stopping.abort();
+        return input;
+      }),
+    ]);
+
+    await assert.rejects(
+      () => runPipeline("deploy", steps, setting(), stopping.signal),
+      /Stopped before swap/,
+    );
+
+    assert.deepEqual(trace, ["setup", "build"], "and nothing after it ran");
+  });
+
+  it("runs everything when nothing asks it to stop", async () => {
+    const trace: string[] = [];
+    const stopping = new AbortController();
+
+    await runPipeline("deploy", supplied(trace), setting(), stopping.signal);
+    assert.deepEqual(trace, ["setup", "build", "swap", "cleanup"]);
+  });
+});
+
 describe("a point that is not one", () => {
   it("names a phase that exists", () => {
     assert.throws(() => addressOf("provision:after:x"), /names no phase/);

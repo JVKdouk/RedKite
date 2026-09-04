@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
+import config from "./deployment.js";
 import { healthcheck, type HealthDeps } from "../src/index.js";
 
 const backend = config.apps.find((app) => app.name === "backend")!;

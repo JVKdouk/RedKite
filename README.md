@@ -3,10 +3,10 @@
 </h1>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/redkite-cd"><img alt="npm version" src="https://img.shields.io/npm/v/redkite-cd.svg"></a>
-  <a href="https://www.npmjs.com/package/redkite-cd"><img alt="npm downloads" src="https://img.shields.io/npm/dm/redkite-cd.svg"></a>
-  <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/node/v/redkite-cd.svg"></a>
-  <a href="./LICENSE"><img alt="license" src="https://img.shields.io/npm/l/redkite-cd.svg"></a>
+  <a href="https://www.npmjs.com/package/redkite"><img alt="npm version" src="https://img.shields.io/npm/v/redkite.svg"></a>
+  <a href="https://www.npmjs.com/package/redkite"><img alt="npm downloads" src="https://img.shields.io/npm/dm/redkite.svg"></a>
+  <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/node/v/redkite.svg"></a>
+  <a href="./LICENSE"><img alt="license" src="https://img.shields.io/npm/l/redkite.svg"></a>
 </p>
 
 <p align="center">
@@ -30,6 +30,7 @@ between deploys.
 - [Requirements](#requirements)
 - [Configuration](#configuration)
 - [Hooks](#hooks)
+- [Verifying a build](#verifying-a-build)
 - [CLI](#cli)
 - [How a deploy runs](#how-a-deploy-runs)
 - [Design](#design)
@@ -39,25 +40,16 @@ between deploys.
 ## Quick start
 
 ```sh
-npm install redkite-cd
+npm install redkite
 ```
 
 Add `redkite.config.ts` at the root of your project:
 
 ```ts
-import { defineDeployment, nextApp, nodeApp, redis } from "redkite-cd";
+import { defineDeployment, nextApp, nodeApp, redis } from "redkite";
 
 export default defineDeployment({
   project: "acme",
-
-  environments: {
-    production: {
-      branch: "main",
-      subnet: "10.20.0",
-      publicPort: 80,
-      host: { bastion: "deploy@acme.example" },
-    },
-  },
 
   services: [redis()],
 
@@ -141,6 +133,39 @@ that stops half way through.
 
 ### Environments
 
+One file each, beside the deployment, named `redkite.<environment>.config.ts`:
+
+```ts
+// redkite.production.config.ts
+import { defineEnvironment } from "redkite";
+
+export default defineEnvironment({
+  branch: "main",
+  subnet: "10.20.0",
+  publicPort: 80,
+  host: { bastion: "deploy@acme.example" },
+});
+```
+
+Redkite finds them by name, so there is no list to keep in step, and
+`redkite.config.ts` has no `environments` key at all: a second place to put a
+set of them is a second place for them to disagree. A config that declares one
+does not compile.
+
+A deployment with only one environment can carry it instead, as `environment`:
+
+```ts
+export default defineDeployment({
+  project: "acme",
+  environment: { branch: "main", subnet: "10.20.0", publicPort: 80 },
+  // ...
+});
+```
+
+That is an override, not a default: it answers for whatever name the command
+line asks for, and wins over any file that disagrees. Two environments means two
+files.
+
 Selected on the command line and threaded into every derived name.
 
 | Field | Meaning |
@@ -150,6 +175,21 @@ Selected on the command line and threaded into every derived name.
 | `publicPort` | The only port anybody outside ever types |
 | `host.bastion` | `user@address` of the deploy host. Absent means this machine |
 | `extraHosts` | Hostname to address, added to every container beside the derived ones |
+| `buildOn` | `"host"` by default. `"local"` compiles here and ships the image |
+
+Images are built on the deploy host, which is where they are needed and costs
+nothing to move them. A host too small to compile on can be told otherwise:
+
+```ts
+production: { buildOn: "local", branch: "main", subnet: "10.0.0", publicPort: 80 }
+```
+
+The checkout, the Dockerfile and the build then happen on this machine, and the
+finished image is streamed into `docker load` on the host down the connection
+that is already open. Nothing is written to a disk at either end. The skip check
+asks the host rather than this machine, so an image compiled here before but
+never sent is still sent. It is ignored when the deploy host is this machine,
+since there would be nothing to move.
 
 `extraHosts` is for something the apps must resolve that redkite does not run:
 a managed database, a legacy service, anything whose address is the thing that
@@ -163,33 +203,11 @@ A name the deployment already resolves, an app's container or a service alias,
 is refused rather than silently overridden. Redirecting one of those would send
 its traffic somewhere else and the deploy would still look like it worked.
 
-### Environments in files of their own
-
-An environment can live beside the deployment instead of inside it, one file per
-environment, named `redkite.<environment>.config.ts`:
-
-```ts
-// redkite.production.config.ts
-import { defineEnvironment } from "redkite-cd";
-
-export default defineEnvironment({
-  branch: "main",
-  subnet: "10.55.0",
-  publicPort: 80,
-  host: { bastion: "deploy@acme.example" },
-});
-```
-
-Redkite finds them by name, so there is no list to keep in step. Drop the
-`environments` key from `redkite.config.ts` entirely, or keep some there and put
-others in files. Defining the same environment in both places is refused, since
-nothing could say which one wins.
-
 ### Where the files live
 
-By default `redkite.config.ts` sits at the root of the project, and a deploy run
-from anywhere inside walks up to find it. A repository that would rather keep
-them together says so in `package.json`:
+By default `redkite.config.ts` sits at the root of the project with the
+environment files beside it, and a deploy run from anywhere inside walks up to
+find them. `package.json` is where a repository says otherwise:
 
 ```json
 {
@@ -201,6 +219,24 @@ Then `deploy/redkite.config.ts` and `deploy/redkite.production.config.ts`. If
 that directory holds no config, redkite stops and says so rather than carrying
 on up the tree: naming a directory and not putting the files there is a mistake,
 not a hint.
+
+An environment that lives somewhere the naming convention would not find it can
+be named outright, at whatever path it is at:
+
+```json
+{
+  "redkite": {
+    "environments": {
+      "production": "./infra/live.ts",
+      "staging": "./infra/staging.ts"
+    }
+  }
+}
+```
+
+Paths are read against the `package.json` that names them. One that is not there
+is refused rather than silently skipped, and an environment named here that also
+sits beside the deployment is refused too: it comes from one place or the other.
 
 ### Apps
 
@@ -216,6 +252,65 @@ not a hint.
 | `secrets` | One ref or several, merged in order, written to `.env` in the image |
 | `files` | Container path to the item whose contents land there |
 | `volumes` | Volume name to container path, for state that outlives a deploy |
+
+### Building from a directory
+
+An app names either a repository to clone or a directory already on this
+machine. A CI job that has already checked the code out is one; so is the copy
+you are editing.
+
+```ts
+{
+  name: "backend",
+  path: "./services/backend",   // instead of repo
+  route: "/api/",
+  port: 3001,
+  // ...
+}
+```
+
+The path is read against the deployment file, not against wherever the command
+was run, so a deploy from a workspace and one from the root build the same tree.
+Nothing is cloned, checked out or cleaned: what is on disk is what ships, and
+the `branch` an environment names is not consulted at all.
+
+The release is the content of the working tree, taken with git's own addressing
+over a scratch index. It covers what is committed, what is modified and what is
+untracked, and honours `.gitignore` — which is the same set the build reads. So
+an edit you never committed is a new release and gets built, and a change under
+an ignored `node_modules` is not and does not:
+
+```
+unchanged            already built at 7797c4c, nothing rebuilt
+uncommitted edit     built from 9bba792, rebuilt
+untracked file       built from 587974b, rebuilt
+ignored file         already built at 9bba792, nothing rebuilt
+```
+
+Somewhere outside git there is nothing to say any of that, so the deployment
+says it instead:
+
+```ts
+{
+  name: "backend",
+  path: "../checkout",
+  include: ["src", "package.json", "yarn.lock"],
+}
+```
+
+`include` names what ships, relative to `path`. It decides the release and the
+build context together: BuildKit is handed a `.dockerignore` that holds
+everything back and lets exactly these through, so a `node_modules` the release
+says nothing about is not uploaded either. Asked to build a directory git knows
+nothing about without one, redkite says so and shows the line to add rather than
+guessing or refusing outright.
+
+An `include` on a work tree is allowed too, and wins over `.gitignore`. That is
+how a repository holding several things is narrowed to the one being built.
+
+When the deploy host is another machine, an app built from a path forces the
+build to happen here and the image to be shipped, the same as `--local`. The
+source is on this machine, so the builder is too.
 
 ### Build presets
 
@@ -238,6 +333,24 @@ The dependency install is not one of the `steps`. The preset copies
 `package.json` and `yarn.lock` ahead of the source and installs against those
 alone, so a commit that changes only source code reuses the layer. That is the
 difference between a deploy and a cold build.
+
+#### What a build is allowed not to produce
+
+A `COPY` whose source is missing fails the build. That is right for the output,
+which is the app itself, and wrong for a directory the repository may simply not
+have. A `carry` entry says which it is:
+
+```ts
+carry: [
+  "/app/.generated",                          // must exist, or the build failed
+  { path: "/app/public", optional: true },    // skipped when it is not there
+]
+```
+
+`nextApp` marks `public` optional and `.next/static` required, because static is
+what the server answers with for every chunk it built. A lockfile named in
+`dependencies.files` is optional too: whether one is missing is the package
+manager's to say, in its own words.
 
 `nextApp` takes `standalone`, which says whether `next.config` sets
 `output: "standalone"`. It defaults to `true`. A standalone build ships the
@@ -262,6 +375,13 @@ steps and the shipped command run. Every `/app` path the build spec names is
 read against it, so a preset needs no change: `output: "/app/dist"` becomes
 `/app/apps/web/dist`.
 
+A Next standalone build traces from the workspace root, so the tree it emits
+holds `apps/web/server.js` rather than `server.js`. `nextApp` declares that with
+`keepsLayout`, and the runtime stage then starts the command at
+`/app/apps/web` and lands `.next/static` and `public` beside it. A build whose
+output flattens the app to the top of the tree, which is every `nodeApp`, leaves
+`keepsLayout` unset and nothing moves.
+
 **The dependency install stays at the repository root.** A workspace resolves
 one lockfile for every package in it, so the install has to see all of them,
 and `node_modules` is where that put it. An app with its own lockfile in a
@@ -269,9 +389,24 @@ subdirectory is not covered by `dir` alone.
 
 ### Services
 
-Long-lived containers shared by the apps, brought up once and adopted after
-that. The proxy is not one of them: apps carry routes, routes imply exactly one
-proxy, so it is derived rather than listed.
+Long-lived containers shared by the apps. The proxy is not one of them: apps
+carry routes, routes imply exactly one proxy, so it is derived rather than
+listed.
+
+A service is adopted when it is the one the config describes, and recreated when
+it is not. Each is created carrying a fingerprint of everything a recreate would
+change, the rendered nginx configuration included, so changing the published
+port or `maxBodySize` reaches the running container instead of sitting in a file
+it was never created from. `redkite plan` reports the comparison without
+changing anything:
+
+```
+services on the host
+  acme-staging-nginx                created from an earlier version of this file
+  acme-staging-redis                not there, will be created
+
+  a deploy converges these
+```
 
 ```ts
 services: [
@@ -333,7 +468,7 @@ config that registers a step at the same point replaces it. That is how one is
 turned off: put something there that does less.
 
 ```ts
-import { defineStep } from "redkite-cd";
+import { defineStep } from "redkite";
 
 export default defineDeployment({
   // ...
@@ -378,7 +513,7 @@ A migration is a step like any other. `migrate()` answers with one at
 the old containers are still serving, and throws before anything retires.
 
 ```ts
-import { migrate } from "redkite-cd";
+import { migrate } from "redkite";
 
 export default defineDeployment({
   steps: [migrate({ app: "backend", command: "yarn db:migrate" })],
@@ -413,7 +548,7 @@ migrate({ app: "backend", command: "yarn db:migrate", network: "deployment" })
 `attachment()` answers with the same flags for a step of your own:
 
 ```ts
-import { attachment, defineStep } from "redkite-cd";
+import { attachment, defineStep } from "redkite";
 
 defineStep("swap:before:seed", async (built, context) => {
   const image = built.apps.find((app) => app.name === "backend")?.builderTag;
@@ -459,6 +594,68 @@ export default defineDeployment({
 });
 ```
 
+## Verifying a build
+
+`redkite verify` is the same host, the same services and the same images as a
+deploy, stopping where one would start moving addresses. It brings the network
+and the services up, builds every app, and runs what each app declares instead
+of swapping.
+
+An app declares its checks. Nothing else is needed:
+
+```ts
+{
+  name: "backend",
+  // ...
+  verify: {
+    steps: ["yarn db:migrate", "yarn test:integration"],
+    environment: { NODE_ENV: "test" },
+  },
+}
+```
+
+The commands run in the **builder** image, which is the one holding the test
+runner and the dev dependencies. The runtime image has neither, and installing
+them at check time would test a different tree. They run on the deployment
+network, so a check reaches postgres at `postgres`, by the same alias the app
+itself uses. They run in order and one at a time: the first is usually what
+brings the test database to the schema the rest expect.
+
+A test environment is a file like any other, and it publishes nothing:
+
+```ts
+// redkite.test.config.ts
+export default defineEnvironment({
+  branch: "pull-request",
+  subnet: "172.254.0",
+});
+```
+
+`publicPort` is absent because nothing in a verify run serves. That absence is
+the whole declaration: an environment without one cannot deploy, so `plan` shows
+it only the verify pipeline, leaves the proxy out of its service list, and
+prints no nginx.
+
+```
+pipeline (verify)
+  setup                     redkite
+  build                     redkite
+  verify                    redkite  backend
+  cleanup                   redkite
+
+services on the host (verify)
+  acme-test-redis                   not there, will be created
+```
+
+Two things are refused before anything is built: a `verify` where no app
+declares checks, and a `deploy` to an environment that names no `publicPort`.
+
+Cleanup still runs, which is what keeps a CI host's disk from filling: it
+reclaims every image of these apps except the ones this run built.
+
+`verify:before:` and `verify:after:` are ordinary hook points, and `--local`,
+`--full` and `--verbose` work the same as for a deploy.
+
 ## CLI
 
 ```
@@ -466,14 +663,109 @@ redkite <command> [environment]
 
   plan [environment]     Print the derived topology, the pipeline and the nginx
   deploy [environment]   Build, swap, health check, and revert on failure
+  verify [environment]   Bring the services up, build, and run each app's checks
 
   --config <path>        Defaults to redkite.config.ts at the root of the project
+  --local                Build the images here and ship them to the host
+  --full                 No step view: every line of every step, in full
   --verbose              Every host command, and every line a build printed
   --version              Print the version and exit
 ```
 
-The environment defaults to `staging`. `plan` needs no host and changes nothing,
-so it is safe to run against production.
+The environment defaults to `staging`. `plan` reads the host to report drift and
+changes nothing, so it is safe to run against production.
+
+### Watching a deploy
+
+On a terminal, `deploy` draws the run as a list of steps. The one running is
+open and its output rolls under a title that stays put; a step that finishes
+shuts to a single line carrying what it cost.
+
+```
+[01:18]   ✔ setup                                                             4s
+[01:18]   ✔ build                                                             9s
+[01:18] ❯ ▾ Building web  yarn build                                       1m09s
+        │ #15 [builder 10/10] RUN yarn build
+        │    ▲ Next.js 15.1.6
+        │    Creating an optimized production build ...
+
+↑↓ move · enter open · shift+↑ latest · + open · - collapse all · q quit
+```
+
+| Key | What it does |
+| --- | --- |
+| `↑` `↓` | Scroll the open step's output, then move between steps once it runs out |
+| `enter` | Open or shut the step under the cursor. One opened by hand stays open when it finishes |
+| `shift+↑` | Jump to the step running now, and follow it again |
+| `shift+↓` | Jump to the first step |
+| `+` | Open the step running now, from anywhere, and keep opening the ones after it |
+| `-` | Shut everything, and stop opening what comes next |
+| `q` | Stop the deploy. Press again to kill it |
+
+The gutter counts the whole run; the number on the right counts the step, and
+freezes at what it cost the moment it finishes. Nothing drawn on the alternate
+screen survives it, so the run is written out again on the way out.
+
+Colour separates where you are from what is happening. The step under the
+cursor is cyan, the step running now is yellow, and a failed one is red and
+outranks both, because that is the row you are looking for. The tick, the cross
+and the arrow carry the step's own state, and the gutter, the timers and the
+rule down the side of a log stay dim so the output reads above them. `NO_COLOR`
+turns all of it off.
+
+Every measurement happens before a colour is added: an escape is zero columns
+wide, and a row measured with one in it is a row that wraps.
+
+Every row is one terminal line. A line too long for the width is cut with an
+ellipsis rather than wrapped, because a wrapped row pushes everything under it
+out of a frame counted in rows. `--full` is the way to read the untrimmed thing:
+no view, no collapsing, every line of every step streamed in full as it arrives.
+
+A pipe, a CI log or `REDKITE_PLAIN=1` gets that same streamed form, with
+`--verbose` adding every host command beside it.
+
+Messages said outside a step show the most recent few. They used to all stay on
+screen, which on a long run left no room for any step's output at all. All of
+them are written out again when the view closes.
+
+### Stopping a deploy
+
+`q`, or ctrl+C without the view, asks the run to stop. Whatever command is in
+flight is killed and the pipeline unwinds through its own failure path, so the
+scratch directory on the host is removed and the connection is closed. The run
+stops **between steps**, which is the unit that leaves the host in a state the
+next deploy can read: a build that has not finished leaves the running
+deployment exactly as it was.
+
+**The deploy does not exit while the build is still running.** Every command runs
+in a process group of its own, so one signal reaches the shell, the docker client
+and the build behind it. Over ssh that group is on the other machine: killing the
+local client there would only lose the reach, so each command records its group
+as it starts and the signal is sent down the connection to it.
+
+The first press sends `SIGTERM`. Every press after it sends `SIGKILL`. Each says
+which, and the run keeps asking the host how many are still there until the
+answer is none:
+
+```
+Stopping the build (SIGTERM). Press again to kill it
+Waiting for 1 still running
+Killing the build (SIGKILL). Nothing exits until it is gone
+Stopped
+```
+
+A process that has taken `SIGKILL` and is still there is one redkite cannot end.
+The fifth press says so and offers the way out rather than taking it, because
+taking it leaves work running with nothing watching it:
+
+```
+This is not stopping. It has had SIGKILL and is still there.
+Press again to leave redkite. That does not stop it: the build keeps running
+on the host, may finish and tag an image no deploy is waiting for, and holds
+the CPU and disk it is using. Nothing will clean up after it but you.
+```
+
+The sixth press leaves.
 
 ## How a deploy runs
 
@@ -496,6 +788,9 @@ with the agent forwarded.
    one. Nginx keeps the retired container as a backup upstream.
 7. **Check.** Each app is probed on itself. One failure reverts all of them.
 8. **Cleanup.** Retired containers removed, superseded images reclaimed.
+
+A `verify` run walks the same list without steps 5 to 7. In their place it runs
+each app's declared checks, so nothing it does touches what is serving.
 
 An image the host already holds is not rebuilt. The tag covers the commit, the
 pipeline, the build spec, the environment file and every credential file, so a

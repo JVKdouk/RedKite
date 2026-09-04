@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import config from "../examples/acme/redkite.config.js";
+import config from "./deployment.js";
 import { build, deploy, Docker, topologyFor } from "../src/index.js";
 import { fakeHost } from "./fakes.js";
 

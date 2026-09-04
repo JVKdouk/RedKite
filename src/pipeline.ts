@@ -10,10 +10,19 @@ import type { Deployment } from "./types.js";
 // exists. A run is a list of steps, each handed what the one before it answered
 // with. Redkite's own four are ordinary members of that list.
 
-// The phases a run walks, in the order it walks them. Each is a step redkite
-// supplies, and the name of the point that step sits at
-export const PHASES = ["setup", "build", "swap", "cleanup"] as const;
+// Every phase redkite supplies a step for. Each is also the name of the point
+// that step sits at. No run walks all of them: swap and verify are alternatives
+export const PHASES = ["setup", "build", "verify", "swap", "cleanup"] as const;
 export type Phase = (typeof PHASES)[number];
+
+// The phases each command walks, in the order it walks them. A phase left out
+// is not run, and a step hung on one of its slots never fires
+export const RUNS = {
+  deploy: ["setup", "build", "swap", "cleanup"],
+  verify: ["setup", "build", "verify", "cleanup"],
+} as const satisfies Record<string, readonly Phase[]>;
+
+export type Run = keyof typeof RUNS;
 
 // Everything before the phase's own step, the phase's own slot, everything after
 export const SLOTS = ["before", "main", "after"] as const;
@@ -59,10 +68,14 @@ export type Built = Prepared & {
 };
 
 export type Released = Built & {
-  // False when an app failed its health check and every app was put back
+  // False when an app failed its health check and every app was put back, or
+  // when a check the verify step ran said the build does not work
   ok: boolean;
   released: string[];
   reverted: string[];
+  // Apps whose checks ran. A deploy runs none, so only a verify fills this,
+  // and the two runs answer with one shape so a step after either reads it
+  checked: string[];
 };
 
 export type Finished = Released & {
@@ -75,6 +88,9 @@ export type Finished = Released & {
 export type Context = {
   config: Deployment;
   environment: string;
+  // Which run this is. A step that behaves differently in one is rare, but the
+  // service set does: nothing serves in a verify, so it has no proxy
+  run: Run;
   topology: Topology;
   host: Host;
   docker: Docker;
@@ -90,6 +106,7 @@ export type Context = {
 type PhaseInput = {
   setup: Start;
   build: Prepared;
+  verify: Built;
   swap: Built;
   cleanup: Released;
 };
@@ -97,6 +114,7 @@ type PhaseInput = {
 type PhaseOutput = {
   setup: Prepared;
   build: Built;
+  verify: Released;
   swap: Released;
   cleanup: Finished;
 };
@@ -153,8 +171,9 @@ export type AnyStep = {
 export function defineStep<const P extends Point>(
   point: P,
   run: Step<P>["run"],
+  check?: Step<P>["check"],
 ): Step<P> {
-  return { point, run };
+  return { point, run, check };
 }
 
 // A step at the same point as one redkite supplies replaces it, in the place redkite
@@ -170,11 +189,22 @@ export function merge(supplied: AnyStep[], added: AnyStep[]): AnyStep[] {
   ];
 }
 
+// Stopping between steps, rather than in the middle of one. A step is the unit
+// that leaves the host in a state the next deploy can read
+export class Aborted extends Error {
+  constructor(point: string) {
+    super(`Stopped before ${point}`);
+    this.name = "Aborted";
+  }
+}
+
 export async function runPipeline(
+  run: Run,
   steps: AnyStep[],
   setting: Omit<Context, "task">,
+  signal?: AbortSignal,
 ): Promise<Finished> {
-  const ordered = sequence(steps);
+  const ordered = sequence(steps, RUNS[run]);
   const plan: Plan = { config: setting.config, environment: setting.environment };
 
   // Every check before any step, so a run that is going to fail on a config
@@ -188,6 +218,8 @@ export async function runPipeline(
   let value: unknown = { environment: setting.environment } satisfies Start;
 
   for (const step of ordered) {
+    if (signal?.aborted) throw new Aborted(step.point);
+
     const task = setting.log.step(step.point);
 
     // A step declares what it takes and answers with through its point, and a
@@ -206,18 +238,21 @@ export async function runPipeline(
     }
   }
 
-  // The last step in the sequence is cleanup's, and a step there answers with a
-  // Finished or does not compile
+  // Every run ends at cleanup, and a step there answers with a Finished or does
+  // not compile
   return value as Finished;
 }
 
-// The order a run walks: for each phase, everything before it, the phase's own
-// slot, then everything after. Redkite's own step leads its slot because merge
-// keeps the supplied list first
-export function sequence(steps: AnyStep[]): AnyStep[] {
+// The order a run walks: for each of its phases, everything before it, the
+// phase's own slot, then everything after. Redkite's own step leads its slot
+// because merge keeps the supplied list first
+export function sequence(
+  steps: AnyStep[],
+  phases: readonly Phase[] = RUNS.deploy,
+): AnyStep[] {
   const ordered: AnyStep[] = [];
 
-  for (const phase of PHASES) {
+  for (const phase of phases) {
     for (const slot of SLOTS) {
       ordered.push(...steps.filter((step) => runsAt(step, phase, slot)));
     }
