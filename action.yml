@@ -1,4 +1,4 @@
-name: Redkite
+name: RedKite CI/CD
 description: Build and swap a blue-green deployment over ssh, or verify one without swapping
 author: Joao Kdouk
 
