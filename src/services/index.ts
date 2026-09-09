@@ -1,4 +1,16 @@
-import type { SecretRefs, ServiceSpec } from "../types.js";
+import type { ProxySpec, SecretRefs, ServiceSpec } from "../types.js";
+
+// Not something a deployment lists. Apps carry routes, routes need something
+// to resolve them, and this says what that something is rather than that it
+// exists. A service by this name is refused: there is already one
+export function nginx(options: ProxySpec = {}): ProxySpec {
+  return {
+    image: options.image ?? "nginx:stable",
+    maxBodySize: options.maxBodySize ?? "1M",
+    server: options.server ?? [],
+    location: options.location ?? [],
+  };
+}
 
 type RedisOptions = {
   image?: string;

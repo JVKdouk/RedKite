@@ -349,14 +349,26 @@ async function buildAll(
       const task = log.step(`Building ${app.name}`);
 
       try {
+        // Said before the reads rather than after them. Every ref is a call to
+        // the vault, and a step that has not spoken yet looks like one that is
+        // not doing anything
+        task.detail("reading its environment");
+        const env = await readEnv(app.secrets, context.secrets);
+
+        task.detail("reading the files it ships with");
+        const files = await resolveFiles(app, context.secrets);
+
         const buildContext: BuildContext = {
           host: here ?? context.host,
           docker: here ? new Docker(here) : context.docker,
           deliver: here && { host: context.host, docker: context.docker },
-          env: await readEnv(app.secrets, context.secrets),
-          files: await resolveFiles(app, context.secrets),
+          env,
+          files,
           branch: environment.branch,
           environment: context.environment,
+          // Forwarded to the deploy host by the connection, so what this
+          // process holds is what the build there can reach
+          agent: Boolean(process.env["SSH_AUTH_SOCK"]),
           detail: task.detail,
           output: task.line,
         };

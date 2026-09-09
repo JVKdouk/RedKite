@@ -3,13 +3,14 @@ import {
   defineDeployment,
   migrate,
   nextApp,
+  nginx,
   nodeApp,
   redis,
 } from "../../src/index.js";
 
 export default defineDeployment({
   project: "acme",
-  maxBodySize: "1024M",
+  proxy: nginx({ maxBodySize: "1024M" }),
 
   // Nothing a plugin brings happens until it is listed here, the vault
   // included: without this the refs below resolve to nothing and the deploy
@@ -26,7 +27,7 @@ export default defineDeployment({
     migrate({
       app: "backend",
       command: "yarn db:migrate",
-      tunnel: { bastion: "deploy@staging.acme.example", from: "DATABASE_URL" },
+      through: "deploy@staging.acme.example",
     }),
   ],
 

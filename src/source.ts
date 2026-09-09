@@ -32,6 +32,9 @@ export type SourceRequest = {
   ref: Ref;
   submodules: boolean;
   detail?: (message: string) => void;
+  // Every line git writes. A first clone of a large repository is the slowest
+  // part of a build and it used to say nothing at all while it happened
+  output?: (line: string) => void;
 };
 
 // Where each kind lives. A tag is peeled, so an annotated one answers with the
@@ -135,7 +138,7 @@ async function clonedSource(
     `  mkdir -p '${host.cache}/mirrors'`,
     `  git clone --mirror '${repo}' '${mirror}'`,
     "fi",
-  ]);
+  ], request.output);
 
   const resolved = await run(host, `resolving ${name}`, [
     `git -C '${mirror}' rev-parse '${REVISION[kind](name)}'`,
@@ -160,7 +163,7 @@ async function clonedSource(
     // Leaves the submodules alone: they are tracked, and clean only removes
     // what is not
     `git -C '${path}' clean -ffdx`,
-  ]);
+  ], request.output);
 
   if (request.submodules) {
     // --remote follows the branch named in .gitmodules rather than the commit
@@ -169,15 +172,21 @@ async function clonedSource(
     await run(host, "updating submodules", [
       `git -C '${path}' submodule sync --recursive`,
       `git -C '${path}' submodule update --init --remote --recursive`,
-    ]);
+    ], request.output);
   }
 
   return { release, tree: path };
 }
 
-async function run(host: Host, what: string, script: string[]) {
+async function run(
+  host: Host,
+  what: string,
+  script: string[],
+  output?: (line: string) => void,
+) {
   const result = await host.sh(
     [`export GIT_SSH_COMMAND='${GIT_SSH}'`, "set -e", ...script].join("\n"),
+    output,
   );
 
   if (result.code === 0) return result;

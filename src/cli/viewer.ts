@@ -79,8 +79,13 @@ export function createViewer(
   input.resume();
   input.setEncoding("utf8");
 
+  const plan = (points: string[]) => change((current) => ({ ...current, planned: points }));
+
   const say = (message: string) =>
-    change((current) => ({ ...current, messages: [...current.messages, message] }));
+    change((current) => ({
+      ...current,
+      messages: [...current.messages, { text: message, at: Date.now() }],
+    }));
 
   const onKey = (data: string) => {
     for (const key of keysOf(data)) {
@@ -159,16 +164,23 @@ export function createViewer(
         expanded: item.held,
       }));
 
+    // Both mark the step as having spoken, which is what tells a working step
+    // from a wedged one on the row itself
     return {
-      detail: (message) => edit((item) => ({ ...item, detail: message })),
+      detail: (message) => edit((item) => ({ ...item, detail: message, spoke: Date.now() })),
       line: (message) =>
-        edit((item) => ({ ...item, lines: [...item.lines, message].slice(-KEPT) })),
+        edit((item) => ({
+          ...item,
+          spoke: Date.now(),
+          lines: [...item.lines, message].slice(-KEPT),
+        })),
       done: (message) => settle("done", message),
       fail: (message) => settle("failed", message),
     };
   };
 
   return Object.assign(say, {
+    plan,
     warn: say,
     fail: say,
     done: say,
@@ -188,5 +200,30 @@ function summary(model: Model): string[] {
     return `${glyph} ${step.label}${said} (${took})`;
   });
 
-  return [...rows, ...model.messages];
+  return [
+    ...rows,
+    ...model.messages.map((message) => message.text),
+    ...whatFailed(model),
+  ];
+}
+
+// The end of what the step that failed was saying. The reason a build stopped
+// is in its own output, and the alternate screen takes every frame with it
+const TAIL = 20;
+
+function whatFailed(model: Model) {
+  const rows: string[] = [];
+
+  for (const step of model.steps.filter((item) => item.state === "failed")) {
+    if (step.lines.length === 0) continue;
+
+    const kept = step.lines.slice(-TAIL);
+    const dropped = step.lines.length - kept.length;
+
+    rows.push("", `${step.label} said:`);
+    if (dropped > 0) rows.push(`  ... ${dropped} earlier lines`);
+    rows.push(...kept.map((line) => `  ${line}`));
+  }
+
+  return rows;
 }

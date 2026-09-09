@@ -1,3 +1,4 @@
+import { PROXY } from "./services/proxy.js";
 import { assertSteps } from "./pipeline.js";
 import { pluginSteps } from "./plugin.js";
 import type { Deployment, Environment } from "./types.js";
@@ -100,6 +101,16 @@ function assertUniqueNames(config: Deployment) {
   const names = [...config.apps, ...config.services].map((item) => item.name);
   const duplicate = names.find((name, i) => names.indexOf(name) !== i);
   if (duplicate) throw new Error(`Duplicate name in deployment: ${duplicate}`);
+
+  // The proxy is derived rather than listed, and it already has this name. A
+  // service claiming it is a second container on the first one's name, which
+  // nothing downstream can tell apart
+  if (!names.includes(PROXY)) return;
+
+  throw new Error(
+    `${PROXY} is the derived proxy, so a service cannot be called that. ` +
+      "What it runs and what goes in its server block is proxy: nginx({ … })",
+  );
 }
 
 // Two apps on the same route means one of them is unreachable, and which one

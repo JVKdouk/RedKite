@@ -365,3 +365,179 @@ dfc55e38768b, read off the image tags rather than the log.
 package.json points at was already found; every shape that failed was a
 different spelling. If it is still not found, the file is somewhere the
 deployment is not, and nothing looks there.
+
+## The proxy is configurable, and its name is reserved
+
+- [x] `nginx()` and `ProxySpec`, replacing the loose `proxyImage` and
+      `maxBodySize`: one place to say what the proxy is rather than three
+- [x] `server` and `location` snippets, rendered into the server block and
+      into every location
+- [x] A hand written line replaces the derived one rather than repeating it.
+      nginx refuses a duplicate proxy_read_timeout outright, so appending would
+      have been a config that fails to start
+- [x] A header's own name is part of what identifies a line, so several
+      proxy_set_header are kept and only the one named twice is replaced
+- [x] `listen` in a server block is refused: the published port maps onto it
+- [x] A service called nginx is refused. It collided with the derived proxy
+      silently, two containers planned on one name at two addresses
+
+9 tests, each reverted to check it fails. The rendered file was put through
+`nginx -t` in a real nginx:stable container, which is what found the duplicate
+directive problem in the first version of this.
+
+## Two silent phases, and a message in the wrong place
+
+- [x] The git phase streams. prepareSource never passed onLine, so a clone, a
+      fetch, a checkout and a submodule update said nothing at all
+- [x] The vault reads say what they are doing. Every app read its secrets and
+      its files before the first detail was emitted, so the step sat there
+      looking dead for as long as the vault took
+- [x] Messages sit where they were said rather than after every step. One from
+      the first ten seconds used to sit below a build still running
+
+Two apps building at once was proved in a real pty: both carry their detail and
+their log. What could not be reproduced here is a build with no output at all,
+which is what a remote deploy showed.
+
+## Bitwarden is two services, and one of them was hanging
+
+- [x] Neither CLI can be asked a question any more. Both ran with a pipe on
+      stdin, so when bw decided the vault was locked it prompted for a master
+      password and waited for ever. Nothing on stdin turns that into a failure
+- [x] Output is collected raw rather than through the line reader, so a key
+      that ends in a newline still does
+- [x] `bitwarden({ secrets: true })`, the default, is Secrets Manager: BW_KEY is
+      an access token. `secrets: false` is the password manager, where BW_KEY is
+      a session and the api credentials obtain one otherwise
+- [x] bws is downloaded once per machine from the release Bitwarden publishes.
+      It is not an npm package, and the name on npm belongs to somebody else
+- [x] Each vault read says which item it is on
+
+Found by running against a real deployment: both build steps sat on "reading
+its environment" for 30 seconds, which is the detail added an hour earlier.
+Their BW_KEY is a Secrets Manager access token, and it was being handed to the
+password manager as a session.
+
+**Confirmed end to end on that deployment.** bws installed in a second, the
+token authenticated, and `bws secret get` answered. What it answered was 404 for
+the ids in that config, which is data rather than plumbing.
+
+## A secret the app needs as a file
+
+- [x] `files` makes the directory before copying into it. cp makes none, so a
+      credential anywhere but beside the code failed the build outright. The
+      bundled example only ever used /app, where the parent already exists
+
+3 tests in dockerfile, reverted to check they fail. Proved against a real
+daemon: /etc/creds/service-account.json landed r-------- owned by root, the
+container read it, and it survived a restart.
+
+## The build could not reach anything over ssh
+
+- [x] `openssh-client` in the builder. Only git was installed, so a git+ssh
+      dependency had no ssh to run
+- [x] The agent forwarded in: `--ssh default` on the build and
+      `--mount=type=ssh` on the install and every step
+- [x] `GIT_SSH_COMMAND` with accept-new, because a builder has no known_hosts
+      and a refusal on first sight is a dependency it cannot fetch
+- [x] None of it when there is no agent: a mount with nothing behind it fails
+      the build outright
+- [x] Part of the fingerprint, and PIPELINE bumped to 5
+
+All four were in the hand-written pipeline redkite replaced, transcribed in
+bench/cache.ts, and all four were dropped. The comment saying nothing in the
+build needs an agent is true of submodules, which the host resolves, and wrong
+about the dependencies an install fetches.
+
+Proved against a real daemon with `git ls-remote git@github.com:…` as a build
+step: without an agent it failed with "Host key verification failed"; with one
+it resolved and the image built.
+
+## node_modules was in a cache mount
+
+- [x] `node_modules` and the app's own `node_modules` out of the default
+      `caches` on both presets. What an install writes has to be in the image,
+      not on a mount BuildKit is free to empty
+- [x] A preset test holding the defaults, reverted to check it fails when the
+      module caches are put back
+
+Found on a real build: `tsx` was in the dependencies and pinned to 4.19.2, the
+build said it could not find it, and `npx tsx --version` answered 4.23.13, which
+is npm fetching a copy rather than running the installed one. A cache mount is
+evicted independently of the layer that filled it, so the install stayed cached
+while the directory it wrote into went empty, and the build then ran against no
+dependencies at all.
+
+Proved against a real daemon: the build printed the pinned 4.19.2, and so did
+the builder image afterwards with no mounts attached to it.
+
+## Reading a run that is not going well
+
+- [x] A spinner beside the running step, turning on the frame timer and stopping
+      when the step does. A step that is slow and a step that is wedged were
+      drawn identically
+- [x] `quiet 45s` on a running step that has said nothing for a while. The row
+      carries when the step last spoke, so silence is on screen rather than
+      inferred from a clock that keeps moving
+- [x] The gutter frozen at the step's own end, not the current time. Every row
+      was counting up, including the ones that had finished
+- [x] The points the run has still to walk, drawn under the steps that have
+      started. The list is known before the run begins
+- [x] `w` wraps the focused step's log instead of cutting it. The room a step is
+      given is counted in rows once wrapping is on, or a single long line claims
+      one row and loses the rest of itself
+- [x] The failed step's last 20 lines written out when the view closes, with a
+      count of what was dropped. The alternate screen takes the frames holding
+      the reason with it
+- [x] The caret gone and the brackets off the gutter: the cursor is a colour,
+      and two glyphs for one thing is one too many
+
+13 tests across the model, the renderer and the viewer's exit path, each
+reverted to check it fails: the spinner frozen, the spinner still turning on a
+finished step, the quiet notice removed, the points to come removed, the started
+ones no longer filtered out, the wrap allowance counted in lines, the tail
+dropped, the tail never trimmed, and the tail taken from every step.
+
+## Docker's env file is not dotenv
+
+- [x] `dockerEnv` parses the vault's text and writes the values, so `--env-file`
+      gets `KEY=value` rather than `KEY="value"`. Docker keeps a quote it is
+      given, and every url parser then rejects the scheme
+- [x] `parseEnv` moved to `src/environment.ts`, where the thing that needs it
+      lives. The cli's dotenv loader imports it rather than owning it
+- [x] `parseEnv` reads a quoted value that runs past its own line. It used to
+      keep the first line and silently drop the rest, which for a pem is a
+      credential that looks present and is not
+- [x] A value docker cannot carry is refused by name, not truncated
+- [x] The `.env` mounted during the build is untouched: a dotenv parser reads
+      that one, and it is the format it expects
+
+Found deploying nebo-ignite: prisma answered P1013, "the scheme is not
+recognized in database URL". The vault's entry had 27 quoted values in it, and
+the migration was reading `"postgresql://...` with the quote still attached.
+Every app redkite has deployed with a quoted vault entry has been running with
+quoted values in its environment.
+
+11 tests across the two formats, each reverted to check it fails: the text
+handed over unchanged, the quotes left on, and a multi-line value truncated.
+
+Confirmed by deploying nebo-ignite to staging end to end: the migration ran,
+both apps swapped, and both answered their health check.
+
+## A migrate option nobody read
+
+- [x] `tunnel: { bastion, from, alias?, port? }` narrowed to `through`. Only
+      `bastion` was ever read. The other three described an ssh forward that no
+      longer happens, and `from` was required, so a config had to invent a value
+      for it
+- [x] Renamed with it: the object held one field, and what it checks is that the
+      machine the migration goes through is the one this environment deploys to
+
+An earlier migrate opened a forward through the bastion and rewrote the variable
+`from` named to point at the forwarded alias. Running the step on the deploy
+host with `--network host` replaced all of it, and the fields describing the
+forward lost their reader without losing their place in the type.
+
+Probed both ways: dropping the check fails the refusal, and inverting it fails
+23, because the example config names its own bastion and every deploy test runs
+that migration.

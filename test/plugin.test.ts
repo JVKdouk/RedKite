@@ -91,10 +91,10 @@ describe("the vault as a plugin", () => {
     assert.ok(storeFor([bitwarden()], item.provider));
   });
 
-  // For a deployment that has stopped reading from it but has not yet taken
-  // the refs out, which would otherwise be a deploy that cannot start
-  it("registers without a store when it was told not to resolve secrets", () => {
-    assert.equal(storeFor([bitwarden({ secrets: false })], "bitwarden"), undefined);
-    assert.equal(bitwarden({ secrets: false }).name, "bitwarden");
+  // Two services, one plugin. Both answer for the same provider tag, because
+  // to an app a secret is a secret whichever Bitwarden holds it
+  it("answers for its provider whichever Bitwarden it reads", () => {
+    assert.ok(storeFor([bitwarden()], "bitwarden"), "secrets manager");
+    assert.ok(storeFor([bitwarden({ secrets: false })], "bitwarden"), "password manager");
   });
 });

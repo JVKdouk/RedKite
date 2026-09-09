@@ -334,3 +334,29 @@ describe("building from a directory", () => {
     assert.equal(written, ".git\n**/.git\n");
   });
 });
+
+// The agent this process holds reaches the build, which is where a manifest's
+// git dependencies are resolved. Without --ssh the mount has nothing behind it
+describe("forwarding the agent into the build", () => {
+  it("asks docker for it when there is one", async () => {
+    const { host } = await run(backend, { agent: true });
+    const command = buildCommand(host.commands);
+
+    assert.match(command, /--ssh default/);
+  });
+
+  it("asks for none when there is not", async () => {
+    const { host } = await run(backend, { agent: false });
+
+    assert.ok(!buildCommand(host.commands).includes("--ssh"));
+  });
+
+  // It changes the Dockerfile, so an image built without one is not the image
+  // a build with one would produce
+  it("is part of what the image is tagged by", async () => {
+    const without = await run(backend, { agent: false });
+    const with_ = await run(backend, { agent: true });
+
+    assert.notEqual(without.result.fingerprint, with_.result.fingerprint);
+  });
+});

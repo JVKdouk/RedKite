@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { Docker } from "../docker.js";
-import { LISTEN_PORT, renderNginx } from "../nginx.js";
+import { LISTEN_PORT, proxyService, renderProxy } from "./proxy.js";
 import type { Run } from "../pipeline.js";
 import type { ServiceTopology, Topology } from "../topology.js";
 import type { Deployment, ServiceSpec } from "../types.js";
@@ -36,25 +36,15 @@ export function plannedServices(
   if (run === "verify") return rest;
 
   const proxy: PlannedService = {
-    spec: router(config),
+    spec: proxyService(config),
     service: topology.router,
     files: {
-      "/etc/nginx/conf.d/default.conf": renderNginx(topology, config.maxBodySize),
+      "/etc/nginx/conf.d/default.conf": renderProxy(topology, config.proxy),
     },
     publish: topology.publicPort,
   };
 
   return [proxy, ...rest];
-}
-
-// Not something a deployment lists. Apps carry routes, routes need a proxy to
-// resolve them, and the one that renders them is this
-export function router(config: Deployment): ServiceSpec {
-  return {
-    name: "nginx",
-    image: config.proxyImage ?? "nginx:stable",
-    restart: "always",
-  };
 }
 
 // Everything a recreate would change, and nothing a deploy resolves. Secrets

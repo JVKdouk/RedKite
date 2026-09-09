@@ -3,8 +3,8 @@ import { execFileSync } from "node:child_process";
 import { environmentOf } from "../config.js";
 import type { Deployment } from "../types.js";
 
-// Cloning private repositories and opening the tunnel both go through the
-// agent, so a deploy without one fails halfway rather than at the start
+// Cloning private repositories and reaching the deploy host both go through
+// the agent, so a deploy without one fails halfway rather than at the start
 
 // Asked before one is demanded. A runner has no keys and no way to be prompted
 // for one, and a deployment that reaches no other machine and clones nothing

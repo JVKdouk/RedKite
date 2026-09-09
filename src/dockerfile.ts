@@ -1,3 +1,5 @@
+import { dirname } from "node:path";
+
 import { appRoot, destinationFor, mountFor, rootedAt } from "./layout.js";
 import type { BuildSpec, CarryPath } from "./types.js";
 
@@ -20,6 +22,10 @@ export type DockerfileContext = {
   envSecret: string;
   // Container path to secret id, for credentials that have to be files
   fileSecrets: Record<string, string>;
+  // Whether an agent is there to forward. A dependency fetched over ssh during
+  // the install needs one, and asking for a mount nothing is behind fails the
+  // build outright
+  agent?: boolean;
   // Where the app sits in the repository, when it is not the repository. The
   // build steps and the shipped command run there, and every /app path the
   // spec names is read against it
@@ -73,7 +79,18 @@ function builderStage(spec: BuildSpec, context: DockerfileContext) {
   lines.push(`ENV NODE_ENV=${context.environment}`);
   lines.push("ENV NEXT_TELEMETRY_DISABLED=1");
 
-  if (spec.dependencies) lines.push(...dependencyLayer(spec, mounts));
+  // accept-new rather than no, the same as the checkout on the host. Without a
+  // known_hosts of its own a build has nothing to compare against, and a first
+  // sight it refuses is a dependency it cannot fetch
+  if (context.agent) {
+    lines.push(`ENV GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"`);
+  }
+
+  // The agent reaches the install and the steps, which is where a manifest's
+  // git dependencies are resolved
+  const agent = context.agent ? "--mount=type=ssh " : "";
+
+  if (spec.dependencies) lines.push(...dependencyLayer(spec, `${agent}${mounts}`));
 
   // Submodules are already in the context: the checkout on the host resolved
   // them, so nothing in the build needs an agent or a .git directory
@@ -93,7 +110,7 @@ function builderStage(spec: BuildSpec, context: DockerfileContext) {
   // written exactly as it would be typed. Quoting it made the whole command one
   // word, and the shell went looking for a program by that name
   for (const step of spec.steps) {
-    lines.push(`RUN ${env}${mounts}${step}`);
+    lines.push(`RUN ${env}${agent}${mounts}${step}`);
   }
 
   return lines;
@@ -134,9 +151,12 @@ function runtimeStage(spec: BuildSpec, context: DockerfileContext) {
     lines.push(optional ? copyOrSkip(from, to, BUILDER_STAGE) : copy(from, to, BUILDER_STAGE));
   }
 
+  // The directory first: cp does not make one, and a credential belongs
+  // somewhere of its own more often than beside the code
   for (const [path, secret] of Object.entries(context.fileSecrets)) {
     lines.push(
-      `RUN --mount=type=secret,id=${secret} cp /run/secrets/${secret} ${path}`,
+      `RUN --mount=type=secret,id=${secret} mkdir -p ${dirname(path)} && ` +
+        `cp /run/secrets/${secret} ${path}`,
     );
   }
 

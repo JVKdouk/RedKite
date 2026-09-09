@@ -1,0 +1,15 @@
+#!/bin/sh
+# Stands in for the Secrets Manager CLI. Records what it was asked, and refuses
+# without a token the way the real one does
+printf '%s\n' "$*" >> "$BWS_CALLS"
+
+case "$1" in
+  --version) printf '1.0.0\n'; exit 0 ;;
+esac
+
+if [ -z "$BWS_ACCESS_TOKEN" ]; then
+  echo "Access token not found" >&2
+  exit 1
+fi
+
+printf '{"id":"%s","key":"THING","value":"A=1\\n"}\n' "$3"

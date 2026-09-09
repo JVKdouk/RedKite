@@ -59,7 +59,7 @@ describe("what a service was created from", () => {
   });
 
   it("changes when the rendered configuration does", () => {
-    assert.notEqual(before, changes((c) => ({ ...c, maxBodySize: "8M" })));
+    assert.notEqual(before, changes((c) => ({ ...c, proxy: { maxBodySize: "8M" } })));
   });
 
   it("changes when an app is added, because the proxy resolves it", () => {
@@ -70,7 +70,7 @@ describe("what a service was created from", () => {
   });
 
   it("changes when the image is pinned somewhere else", () => {
-    assert.notEqual(before, changes((c) => ({ ...c, proxyImage: "nginx:1.27" })));
+    assert.notEqual(before, changes((c) => ({ ...c, proxy: { image: "nginx:1.27" } })));
   });
 
   // The value is never read: whether the running config is the current one is a

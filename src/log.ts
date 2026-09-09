@@ -14,6 +14,9 @@ export type Task = {
 };
 
 export type Log = ((message: string) => void) & {
+  // Every point the run will walk, said once before the first of them starts.
+  // A view that knows the whole list can show what has not begun
+  plan?(points: string[]): void;
   // Something the run survived, but that the person should know happened
   warn(message: string): void;
   // The reason a deploy is about to stop, or did
@@ -31,6 +34,7 @@ const NOTHING: Task = {
 };
 
 export const silent: Log = Object.assign(() => {}, {
+  plan: () => {},
   warn: () => {},
   fail: () => {},
   done: () => {},

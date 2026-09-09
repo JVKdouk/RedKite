@@ -1,9 +1,8 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 
 import type { SecretStore } from "./refs.js";
 
@@ -14,7 +13,32 @@ import type { SecretStore } from "./refs.js";
 // purely as a sandbox, which meant installing several thousand packages on
 // every deploy to read three items.
 
-const run = promisify(execFile);
+// Nothing on stdin, ever. Both CLIs ask for a password when they decide the
+// vault is locked, and a question put down a pipe nobody writes to is a deploy
+// that waits for ever rather than one that fails.
+//
+// The output is kept exactly as it came: a secret is a file's contents, and a
+// key that lost its last newline is a key some parsers refuse
+function run(file: string, args: string[], env: Record<string, string> = {}) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(file, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...env },
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+    child.on("error", reject);
+
+    child.on("close", (code) => {
+      if (code === 0) return resolve({ stdout, stderr });
+      reject(new Error(stderr.trim() || stdout.trim() || `${file} exited ${code}`));
+    });
+  });
+}
 
 // A session the caller already holds, or what it takes to obtain one. Both
 // spellings in one object would be a pair of credentials nobody can tell apart
@@ -44,25 +68,32 @@ export async function bitwardenStore(
 
   const bw = async (args: string[], env: Record<string, string> = {}) =>
     await run(command.file, [...command.prefix, ...args], {
-      env: {
-        ...process.env,
-        BITWARDENCLI_APPDATA_DIR: appdata,
-        ...env,
-      },
-      maxBuffer: 32 * 1024 * 1024,
+      BITWARDENCLI_APPDATA_DIR: appdata,
+      ...env,
     });
 
   const session = await unlock(bw, credentials, detail);
 
   // An item added since the last deploy is not in the local vault otherwise,
-  // and bw get answers "not found" rather than fetching it
-  await bw(["sync"], { BW_SESSION: session }).catch(() => undefined);
+  // and bw get answers "not found" rather than fetching it. This is also what
+  // proves a session handed in still works: without it the first read is what
+  // finds out, and by then a build is waiting on the answer
+  await bw(["sync"], { BW_SESSION: session }).catch((error: unknown) => {
+    if (!("session" in credentials)) return undefined;
+
+    throw new Error(
+      `The session it was given does not open this vault: ${messageOf(error)}. ` +
+        "Obtain one with bw unlock --raw, or unset it and let the api credentials do it",
+    );
+  });
 
   // Fetched once each. A second read of the same item during a deploy is the
   // same answer, and this avoids a process per call site
   const cache = new Map<string, Promise<string>>();
 
   const fetch = async (id: string) => {
+    detail(`reading ${id.slice(0, 8)}`);
+
     const item = await bw(["get", "notes", id, "--raw"], {
       BW_SESSION: session,
     }).catch((error: unknown) => {
@@ -145,11 +176,15 @@ async function install(detail: (message: string) => void) {
   detail(`installing ${CLI}, once for this machine`);
   await mkdir(directory, { recursive: true });
 
-  await run(
-    "npm",
-    ["install", "--prefix", directory, "--no-save", "--no-audit", "--no-fund", CLI],
-    { maxBuffer: 32 * 1024 * 1024 },
-  ).catch((error: unknown) => {
+  await run("npm", [
+    "install",
+    "--prefix",
+    directory,
+    "--no-save",
+    "--no-audit",
+    "--no-fund",
+    CLI,
+  ]).catch((error: unknown) => {
     throw new Error(`Could not install ${CLI}: ${messageOf(error)}`);
   });
 

@@ -30,10 +30,10 @@ type MigrateOptions = {
   // already reach whatever the app's environment file points at. A database
   // this deployment runs as a service is on "deployment" instead
   network?: StepNetwork;
-  // Written when the step reached its database through a forward. It runs on
-  // the deploy host now, which is the machine that bastion named, so nothing
-  // is forwarded and the deploy refuses a bastion that is anything else
-  tunnel?: { bastion: string; from: string; alias?: string; port?: number };
+  // The machine this migration reaches its database through. The step runs on
+  // the deploy host, so a deployment that moved to another one is refused
+  // rather than pointed at a database it may not be able to see
+  through?: string;
 };
 
 // An ordinary step at an ordinary point. Hung before the swap, it runs while
@@ -78,11 +78,11 @@ function assertReachable(plan: Plan, options: MigrateOptions) {
   if (!app) throw new Error(`${options.app} names no app in this deployment`);
 
   const bastion = environmentOf(plan.config, plan.environment)?.host?.bastion;
-  const tunnel = options.tunnel;
-  if (!tunnel || tunnel.bastion === bastion) return;
+  const expected = options.through;
+  if (!expected || expected === bastion) return;
 
   throw new Error(
-    `${options.app} tunnels its migration through ${tunnel.bastion}, ` +
+    `${options.app} migrates through ${expected}, ` +
       `but ${plan.environment} deploys to ${bastion ?? "this machine"}. ` +
       "The step runs on the deploy host, so they have to be the same",
   );

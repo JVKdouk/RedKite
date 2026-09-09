@@ -42,6 +42,8 @@ function model(steps: Step[], over: Partial<Model> = {}): Model {
 }
 
 const rows = (m: Model) => render(m).filter((row) => row.trim() !== "");
+// The frame is padded above, so the first row drawn is the first that is not blank
+const top = (drawn: string[]) => drawn.find((row) => row.trim() !== "") ?? "";
 const at = (m: Model, needle: string) => render(m).findIndex((row) => row.includes(needle));
 
 describe("reading the keys", () => {
@@ -267,7 +269,7 @@ describe("what the terminal is given", () => {
           lines: ["x".repeat(300)],
         }),
       ],
-      { columns: 76, messages: ["y".repeat(300)], now: START + 3000 },
+      { columns: 76, messages: [{ text: "y".repeat(300), at: START }], now: START + 3000 },
     );
 
     for (const row of render(wide)) assert.ok(row.length <= 76, `${row.length}: ${row}`);
@@ -281,26 +283,26 @@ describe("what the terminal is given", () => {
         now: START + 3000,
       });
 
-      const row = render(one)[0] ?? "";
+      const row = top(render(one));
       assert.equal(row.length, columns, `at ${columns} columns`);
       assert.ok(row.endsWith("3s"), `at ${columns} columns: ${row}`);
     }
   });
 
-  it("marks the step under the cursor", () => {
+  // No caret: which row is being read is said in colour, and a column spent on
+  // a marker is a column the label does not get
+  it("spends no column on a cursor marker", () => {
     const drawn = render(model([step("setup"), step("build")], { cursor: 0 }));
-    const marked = drawn.filter((row) => row.includes("❯"));
 
-    assert.equal(marked.length, 1);
-    assert.ok(marked[0]?.includes("setup"));
+    assert.ok(!drawn.some((row) => row.includes("❯")));
   });
 
   it("says how a step ended", () => {
     const done = render(model([step("setup", { state: "done", ended: START + 3000 })]));
     const failed = render(model([step("swap", { state: "failed", ended: START + 1000 })]));
 
-    assert.ok(done[0]?.includes("✔"));
-    assert.ok(failed[0]?.includes("✘"));
+    assert.ok(top(done).includes("✔"));
+    assert.ok(top(failed).includes("✘"));
   });
 });
 
@@ -347,7 +349,7 @@ describe("the colours", () => {
     for (const detail of details) {
       for (let columns = 30; columns <= 120; columns += 7) {
         const one = model([step("web", { detail })], { columns, now: START + 3000 });
-        const row = painted(one)[0] ?? "";
+        const row = top(painted(one));
 
         assert.equal(bare(row).length, columns, `${columns} columns, detail ${detail.length}`);
         assert.ok(bare(row).endsWith("3s"), `${columns} columns`);
@@ -368,7 +370,7 @@ describe("the colours", () => {
 
   it("keeps a clipped row's ellipsis outside the colour it cut", () => {
     const one = model([step("Building web", { detail: "x".repeat(200) })], { columns: 40 });
-    const row = painted(one)[0] ?? "";
+    const row = top(painted(one));
 
     assert.ok(bare(row).includes("\u2026"));
     assert.equal(bare(row).length, 40);
@@ -387,7 +389,7 @@ describe("what the frame keeps room for", () => {
 
     const quiet = model(steps, { messages: [] });
     const noisy = model(steps, {
-      messages: Array.from({ length: 40 }, (_, index) => `$ docker ps  ${index}ms`),
+      messages: Array.from({ length: 40 }, (_, index) => ({ text: `$ docker ps ${index}`, at: START })),
     });
 
     assert.ok(rule(render(quiet)) > 0);
@@ -396,7 +398,7 @@ describe("what the frame keeps room for", () => {
 
   it("shows the messages that were said last", () => {
     const one = model([step("build")], {
-      messages: ["oldest", "middle", "newest"],
+      messages: ["oldest", "middle", "newest"].map((text) => ({ text, at: START })),
     });
 
     const drawn = render(one);
@@ -438,6 +440,250 @@ describe("what the frame keeps room for", () => {
   });
 });
 
+// A frame of titles with no output says nothing the last line of output would
+// not, so when it cannot all fit the list is what gives way
+describe("a terminal with barely any room", () => {
+  const lines = Array.from({ length: 60 }, (_, index) => `line ${index}`);
+  const rule = (drawn: string[]) => drawn.filter((row) => row.includes("\u2502")).length;
+
+  const many = [
+    step("Opening a connection", { state: "done" }),
+    step("Reading the vault", { state: "done" }),
+    step("setup", { state: "done" }),
+    step("build", { expanded: true }),
+    step("Building frontend", { expanded: true, lines }),
+    step("Building backend", { expanded: true, lines }),
+  ];
+
+  it("still shows the running step's output", () => {
+    for (const rows of [8, 9, 10, 12]) {
+      const one = model(many, { rows, cursor: 5 });
+      assert.ok(rule(render(one)) > 0, `${rows} rows showed no output at all`);
+    }
+  });
+
+  it("drops the oldest titles rather than the log", () => {
+    const drawn = render(model(many, { rows: 9, cursor: 5 }));
+
+    assert.ok(!drawn.some((row) => row.includes("Opening a connection")));
+    assert.ok(drawn.some((row) => row.includes("Building backend")));
+  });
+
+  // Whichever step is being read, not whichever is newest
+  it("keeps the step under the cursor on screen", () => {
+    const drawn = render(model(many, { rows: 9, cursor: 0 }));
+
+    assert.ok(drawn.some((row) => row.includes("Opening a connection")));
+  });
+
+  // Nothing is open, so there is no log to keep room for
+  it("shows titles alone when the one being read is shut", () => {
+    const shut = many.map((item) => ({ ...item, expanded: false }));
+    const drawn = render(model(shut, { rows: 9, cursor: 5 }));
+
+    assert.equal(rule(drawn), 0);
+    assert.ok(drawn.some((row) => row.includes("Building backend")));
+  });
+
+  it("still leaves room for the log once messages are said", () => {
+    const noisy = model(many, {
+      rows: 12,
+      cursor: 5,
+      messages: Array.from({ length: 20 }, (_, index) => ({ text: `$ docker ps ${index}`, at: START })),
+    });
+
+    assert.ok(rule(render(noisy)) > 0);
+  });
+});
+
+// A finished row is a record of when it happened, so it stops moving. Only
+// the step still running has a clock that is still running with it
+describe("the run clock down the side", () => {
+  it("freezes a finished step at the moment it ended", () => {
+    const steps = [
+      step("setup", { state: "done", ended: START + 20_000 }),
+      step("build", { state: "running" }),
+    ];
+
+    const early = render(model(steps, { now: START + 30_000 }));
+    const late = render(model(steps, { now: START + 900_000 }));
+
+    const setupAt = (drawn: string[]) => drawn.find((row) => row.includes("setup")) ?? "";
+    const buildAt = (drawn: string[]) => drawn.find((row) => row.includes("build")) ?? "";
+
+    assert.ok(setupAt(early).startsWith("00:20"), setupAt(early));
+    assert.equal(setupAt(late).slice(0, 5), setupAt(early).slice(0, 5), "it stopped");
+
+    assert.ok(buildAt(early).startsWith("00:30"));
+    assert.ok(buildAt(late).startsWith("15:00"), "and the running one did not");
+  });
+
+  it("says it without brackets", () => {
+    const drawn = render(model([step("build")], { now: START + 5000 }));
+
+    assert.ok(top(drawn).startsWith("00:05"), top(drawn));
+    assert.ok(!top(drawn).includes("["));
+  });
+});
+
+// The newest row sits against the footer, the way a terminal's own output does
+describe("where the frame sits", () => {
+  it("fills upwards, so the blank rows are above", () => {
+    const drawn = render(model([step("setup"), step("build")], { rows: 20 }));
+    const first = drawn.findIndex((row) => row.trim() !== "");
+
+    assert.ok(first > 0, "there is padding above");
+    assert.ok(drawn[drawn.length - 3]?.includes("build"), "and the newest is at the bottom");
+  });
+});
+
+// Printed after every step, a message from the first ten seconds sat below a
+// build still running half an hour later
+describe("where a message sits", () => {
+  const at = (drawn: string[], needle: string) =>
+    drawn.findIndex((row) => row.includes(needle));
+
+  it("sits where it was said, not at the bottom", () => {
+    const one = model(
+      [
+        step("setup", { started: START, state: "done", ended: START + 1000 }),
+        step("build", { started: START + 20_000, state: "running" }),
+      ],
+      {
+        cursor: 1,
+        now: START + 30_000,
+        messages: [{ text: "recreating the proxy", at: START + 500 }],
+      },
+    );
+
+    const drawn = render(one);
+
+    assert.ok(at(drawn, "setup") < at(drawn, "recreating the proxy"));
+    assert.ok(at(drawn, "recreating the proxy") < at(drawn, "build"));
+  });
+
+  it("carries the moment it was said rather than the clock", () => {
+    const one = model([step("build", { started: START })], {
+      now: START + 600_000,
+      messages: [{ text: "said early", at: START + 5000 }],
+    });
+
+    const row = render(one).find((item) => item.includes("said early")) ?? "";
+    assert.ok(row.startsWith("00:05"), row);
+  });
+
+  // The message is usually about what the step then went and did
+  it("puts a step first when the two share a moment", () => {
+    const one = model([step("setup", { started: START })], {
+      messages: [{ text: "creating the network", at: START }],
+    });
+
+    const drawn = render(one);
+    assert.ok(at(drawn, "setup") < at(drawn, "creating the network"));
+  });
+});
+
+// A step that is working and one that is wedged looked identical, which is
+// what made every silent phase this year take an hour to find
+describe("telling working from wedged", () => {
+  const running = (over: Partial<Step> = {}) =>
+    step("build", { state: "running", started: START, ...over });
+
+  const row = (m: Model) => render(m).find((line) => line.includes("build")) ?? "";
+
+  it("turns while a step is running", () => {
+    const one = row(model([running()], { now: START + 1000 }));
+    const two = row(model([running()], { now: START + 1200 }));
+
+    assert.notEqual(one.slice(0, 12), two.slice(0, 12));
+  });
+
+  it("stops turning once the step has finished", () => {
+    const done = step("build", { state: "done", ended: START + 1000 });
+
+    const one = row(model([done], { now: START + 5000 }));
+    const two = row(model([done], { now: START + 5200 }));
+
+    assert.equal(one, two);
+  });
+
+  // The whole point: a build that has said nothing for a while says so
+  it("says how long a running step has been quiet", () => {
+    const quiet = row(model([running({ spoke: START })], { now: START + 45_000 }));
+    const busy = row(model([running({ spoke: START + 44_000 })], { now: START + 45_000 }));
+
+    assert.match(quiet, /quiet 45s/);
+    assert.ok(!busy.includes("quiet"), busy);
+  });
+
+  it("never says it of a step that has finished", () => {
+    const done = step("build", { state: "done", ended: START + 1000, spoke: START });
+
+    assert.ok(!row(model([done], { now: START + 900_000 })).includes("quiet"));
+  });
+});
+
+// The run walks a list known before it starts, so what is left is knowable
+describe("what has not started yet", () => {
+  it("draws the points still to come, under what has", () => {
+    const one = model([step("setup", { state: "done", ended: START + 1000 })], {
+      planned: ["setup", "build", "swap", "cleanup"],
+    });
+
+    const drawn = render(one);
+    const at = (needle: string) => drawn.findIndex((r) => r.includes(needle));
+
+    assert.ok(at("setup") < at("build"));
+    assert.ok(at("build") < at("swap"));
+    assert.ok(at("swap") < at("cleanup"));
+  });
+
+  it("drops a point once its step has started", () => {
+    const one = model(
+      [step("setup", { state: "done", ended: START + 1000 }), step("build")],
+      { planned: ["setup", "build", "swap"] },
+    );
+
+    const built = render(one).filter((r) => r.includes("build"));
+    assert.equal(built.length, 1, "once as a step, never again as a point to come");
+  });
+
+  it("shows none when nothing said what the run would walk", () => {
+    const drawn = render(model([step("setup")], { planned: [] }));
+
+    assert.equal(drawn.filter((r) => r.trim() !== "").length, 2, "the step and the footer");
+  });
+});
+
+// One row per line is what keeps a frame countable, and this is for reading an
+// error that does not fit
+describe("wrapping a long line", () => {
+  const long = "x".repeat(200);
+
+  it("cuts with an ellipsis until it is asked not to", () => {
+    const drawn = render(model([step("build", { expanded: true, lines: [long] })], { columns: 60 }));
+    const shown = drawn.filter((r) => r.includes("x"));
+
+    assert.equal(shown.length, 1);
+    assert.ok(shown[0]?.endsWith("…"));
+  });
+
+  it("gives the line as many rows as it needs", () => {
+    const one = model([step("build", { expanded: true, lines: [long] })], { columns: 60 });
+    const drawn = render(apply(one, "wrap"));
+    const shown = drawn.filter((r) => r.includes("x"));
+
+    assert.ok(shown.length > 1, `wrapped onto ${shown.length} rows`);
+    assert.ok(!shown.some((r) => r.endsWith("…")));
+  });
+
+  it("turns back off", () => {
+    const one = apply(apply(model([step("build")]), "wrap"), "wrap");
+
+    assert.equal(one.wrapped, false);
+  });
+});
+
 describe("cutting a line to the terminal", () => {
   it("keeps what fits", () => {
     assert.equal(clip("abcdef", 6), "abcdef");
@@ -454,8 +700,8 @@ describe("the clocks", () => {
     const one = model([step("build", { started: START + 5000 })], { now: START + 95_000 });
     const drawn = render(one);
 
-    assert.ok(drawn[0]?.startsWith("[01:35]"), drawn[0]);
-    assert.ok(drawn[0]?.endsWith("1m30s"), drawn[0]);
+    assert.ok(top(drawn).startsWith("01:35"), top(drawn));
+    assert.ok(top(drawn).endsWith("1m30s"), top(drawn));
   });
 
   // A finished step is a record of what it cost, so the number stops moving
@@ -465,8 +711,8 @@ describe("the clocks", () => {
     const early = render(model([finished], { now: START + 20_000 }));
     const late = render(model([finished], { now: START + 900_000 }));
 
-    assert.ok(early[0]?.endsWith("12s"));
-    assert.ok(late[0]?.endsWith("12s"));
+    assert.ok(top(early).endsWith("12s"));
+    assert.ok(top(late).endsWith("12s"));
   });
 
   it("reads a long run as minutes and seconds", () => {

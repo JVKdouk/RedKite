@@ -133,8 +133,8 @@ describe("deploy", () => {
     assert.ok(migrated < firstRetire, "and it ran while the old containers still served");
   });
 
-  // The deploy host is the bastion the tunnelled pipeline forwarded through, so
-  // the step reaches the database the same way the host itself does
+  // The step runs on the deploy host, so it reaches the database the same way
+  // that machine does
   it("runs the migration in the builder image, on the host's own network", async () => {
     const { host } = await run({ existing: [back.container] });
     const migration = host.commands.find((c) => c.includes("yarn db:migrate"))!;
@@ -200,14 +200,14 @@ describe("deploy", () => {
     assert.deepEqual(host.commands, [], "and the host is untouched");
   });
 
-  it("refuses a migration tunnelled through anything but the deploy host", async () => {
+  it("refuses a migration that goes through anything but the deploy host", async () => {
     const elsewhere: Deployment = {
       ...config,
       steps: [
         migrate({
           app: "backend",
           command: "yarn db:migrate",
-          tunnel: { bastion: "ubuntu@nowhere", from: "DATABASE_URL" },
+          through: "ubuntu@nowhere",
         }),
       ],
     };

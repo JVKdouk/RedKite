@@ -42,11 +42,29 @@ export async function loadConfig(explicit?: string): Promise<Deployment> {
   const path = explicit ? resolve(explicit) : discover(process.cwd());
   const config = defaultOf(await load(path), path) as Deployment;
 
+  const manifest = manifestOf(explicit ? dirname(path) : process.cwd());
   const beside = await loadEnvironments(dirname(path));
-  const named = await loadNamed(manifestOf(explicit ? dirname(path) : process.cwd()));
+
+  // The directory package.json names is read whether or not the deployment
+  // turned out to be in it, so environments may sit together under one roof
+  // with the deployment at the root above them
+  const declared = directoryOf(manifest);
+  const under = declared && declared !== dirname(path) ? await loadEnvironments(declared) : {};
+
+  const named = await loadNamed(manifest);
+  const found = { ...beside, ...under };
+
+  for (const name of Object.keys(under)) {
+    if (!beside[name]) continue;
+
+    throw new Error(
+      `${name} sits both beside the deployment and in ${declared}, ` +
+        "and an environment comes from one place or the other",
+    );
+  }
 
   for (const name of Object.keys(named)) {
-    if (!beside[name]) continue;
+    if (!found[name]) continue;
 
     throw new Error(
       `${name} is named by package.json and also sits beside the deployment. ` +
@@ -54,14 +72,16 @@ export async function loadConfig(explicit?: string): Promise<Deployment> {
     );
   }
 
-  return { ...rooted(config, dirname(path)), environments: { ...beside, ...named } };
+  return { ...rooted(config, dirname(path)), environments: { ...found, ...named } };
 }
 
 // A source path belongs to the file that named it, not to wherever the command
 // was run. Resolving it here is what lets a deploy from a workspace and one
 // from the root build the same tree
 function rooted(config: Deployment, directory: string): Deployment {
-  if (!config.apps.some((app) => app.path)) return config;
+  // A file that never called defineDeployment can export anything, and the
+  // message worth getting is the one topologyFor gives rather than a TypeError
+  if (!(config.apps ?? []).some((app) => app.path)) return config;
 
   return {
     ...config,
@@ -99,16 +119,28 @@ async function loadNamed(manifest: Manifest | undefined) {
 // likely to be run from a workspace inside it as from there
 export function discover(from: string): string {
   let directory = from;
+  // Where something addressed to redkite was seen but no deployment. Naming it
+  // is the difference between "there is nothing here" and "the file you have
+  // is an environment, and an environment is not a deployment"
+  const nearby: string[] = [];
 
   for (;;) {
     const declared = directoryFrom(directory);
 
-    // Saying where the files are and not putting them there is a mistake worth
-    // stopping for, rather than a reason to keep looking further up
-    if (declared) return found(declared) ?? missing(declared, directory);
+    // Naming a directory that is not there is a mistake worth stopping for.
+    // One that is there and holds no deployment is not: it may hold only the
+    // environments, and the deployment may sit at the root above them
+    if (declared && !existsSync(declared)) missing(declared, directory);
+
+    const there = declared && found(declared);
+    if (there) return there;
 
     const here = found(directory);
     if (here) return here;
+
+    for (const place of declared ? [declared, directory] : [directory]) {
+      for (const entry of environmentsAt(place)) nearby.push(join(place, entry));
+    }
 
     const parent = dirname(directory);
     if (parent === directory) break;
@@ -116,11 +148,30 @@ export function discover(from: string): string {
     directory = parent;
   }
 
+  if (nearby.length > 0) {
+    throw new Error(
+      `No deployment found, but ${nearby.join(" and ")} reads as an environment. ` +
+        "An environment says which branch and which subnet; the deployment says " +
+        "the project, the apps and the services, and is redkite.config.ts",
+    );
+  }
+
   throw new Error(
     `No redkite.config.ts found in ${from} or any directory above it. A deployment ` +
       'is one file at the root of the project, or wherever package.json\'s ' +
       '"redkite": { "directory": … } says it is',
   );
+}
+
+// The names beside a deployment that would be read as environments, for a
+// message that can say what was there instead of what was not
+function environmentsAt(directory: string) {
+  if (!existsSync(directory)) return [];
+
+  return readdirSync(directory)
+    .filter((entry) => !CANDIDATES.includes(entry))
+    .filter((entry) => PER_ENVIRONMENT.test(entry))
+    .sort();
 }
 
 // Every environment that lives in a file of its own, keyed by the name in it
@@ -165,8 +216,7 @@ function found(directory: string) {
 
 function missing(declared: string, from: string): never {
   throw new Error(
-    `${join(from, "package.json")} points redkite at ${declared}, which holds no ` +
-      `redkite.config.${EXTENSIONS.join(", redkite.config.")}`,
+    `${join(from, "package.json")} points redkite at ${declared}, which is not there`,
   );
 }
 
@@ -193,6 +243,14 @@ function manifestAt(directory: string): Manifest | undefined {
   }
 }
 
+// Where the project starts, which is where a .env belongs. The nearest
+// package.json above wherever this was run, and the directory itself when
+// there is none
+export function projectRoot(explicit?: string) {
+  const from = explicit ? dirname(resolve(explicit)) : process.cwd();
+  return manifestOf(from)?.root ?? from;
+}
+
 // The nearest one above wherever this was run, which is the same walk the
 // config itself is found by
 function manifestOf(from: string) {
@@ -209,11 +267,17 @@ function manifestOf(from: string) {
   }
 }
 
-// package.json says where the deployment files live, for a repository that
-// would rather not keep them at its root
+// package.json says where redkite's files live, for a repository that would
+// rather not keep them at its root
 function directoryFrom(directory: string) {
-  const declared = manifestAt(directory)?.redkite.directory;
-  return typeof declared === "string" ? resolve(directory, declared) : undefined;
+  return directoryOf(manifestAt(directory));
+}
+
+function directoryOf(manifest: Manifest | undefined) {
+  if (!manifest) return undefined;
+
+  const declared = manifest.redkite.directory;
+  return typeof declared === "string" ? resolve(manifest.root, declared) : undefined;
 }
 
 function defaultOf(module: unknown, path: string) {

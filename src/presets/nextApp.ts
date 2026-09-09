@@ -57,10 +57,11 @@ export function nextApp(options: NextAppOptions = {}): BuildSpec {
       // whatever the repository put there, and plenty of apps have none
       carry: ["/app/.next/static", { path: "/app/public", optional: true }],
       entrypoint: start("node server.js"),
-      // app-modules is what makes the build fast: node_modules on a mount
-      // rather than in a layer, which the standalone tree makes safe by
-      // carrying its own copy of everything the server reaches
-      caches: ["yarn", "npm", "modules", "app-modules", "next-app"],
+      // next-app is Next's own build cache, which only ever makes a build
+      // slower when it is dropped. node_modules is not here for the same
+      // reason it is not in nodeApp: a dropped mount and a kept layer is a
+      // build that cannot find what the manifest lists
+      caches: ["yarn", "npm", "next-app"],
     }),
     preset: "nextApp",
     // The standalone tree traces from the workspace root, so an app in a

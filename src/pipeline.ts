@@ -207,6 +207,10 @@ export async function runPipeline(
   const ordered = sequence(steps, RUNS[run]);
   const plan: Plan = { config: setting.config, environment: setting.environment };
 
+  // What the run will walk, said before any of it does. Nothing depends on it
+  // being heard: a log without a view has nothing to do with the list
+  setting.log.plan?.(ordered.map((step) => step.point));
+
   // Every check before any step, so a run that is going to fail on a config
   // mistake fails before it has created a network or built an image. Nothing
   // wraps what a check throws: it is about the config, and the config is what

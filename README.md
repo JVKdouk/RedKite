@@ -224,6 +224,12 @@ find them. `package.json` is where a repository says otherwise:
 }
 ```
 
+The deployment does not have to be one of them. A repository that keeps
+`redkite.config.ts` at its root and the environment files together under
+`deploy/` works the same way: the directory is read for environments whether or
+not the deployment turned out to be in it. Naming a directory that is not there
+is still refused, and one environment defined in both places is too.
+
 Then `deploy/redkite.config.ts` and `deploy/redkite.production.config.ts`. If
 that directory holds no config, redkite stops and says so rather than carrying
 on up the tree: naming a directory and not putting the files there is a mistake,
@@ -343,6 +349,22 @@ When the deploy host is another machine, an app built from a path forces the
 build to happen here and the image to be shipped, the same as `--local`. The
 source is on this machine, so the builder is too.
 
+#### Dependencies fetched over ssh
+
+A `git+ssh` entry in a manifest is resolved during the install, inside the
+build, long after the checkout on the host is finished. That needs three things
+the checkout does not, and redkite arranges all of them when this process holds
+an agent: `openssh-client` in the builder, the agent forwarded in as a
+`--mount=type=ssh`, and `GIT_SSH_COMMAND` set to accept a host on first sight.
+
+A run with no agent asks for none of it, because a mount with nothing behind it
+fails the build outright. Whether it was forwarded is part of what the image is
+tagged by, so an image built without one is never mistaken for an image built
+with one.
+
+Nothing else is needed: the same agent that lets the deploy host clone the
+repository is what the build reaches through.
+
 ### Build presets
 
 `nodeApp` and `nextApp` describe a two-stage build: a fat builder image with
@@ -364,6 +386,13 @@ The dependency install is not one of the `steps`. The preset copies
 `package.json` and `yarn.lock` ahead of the source and installs against those
 alone, so a commit that changes only source code reuses the layer. That is the
 difference between a deploy and a cold build.
+
+The package manager's download cache is a cache mount; `node_modules` is a
+layer. They are not interchangeable, because a cache mount is evicted on its
+own schedule and the layer that filled it is not: once the two disagree, the
+install is cached, the mount is empty, and the build runs against no
+dependencies at all. `caches` therefore defaults to the download caches only,
+and what a build needs on disk is written into the image.
 
 #### What a build is allowed not to produce
 
@@ -436,6 +465,34 @@ ssh is never left able to ask a question, whichever of the three it is under: a
 prompt nobody is there to answer is a deploy that hangs rather than one that
 fails. Cloning is separate and always `accept-new`, because the deploy host
 reaches GitHub rather than reaching you.
+
+### The proxy
+
+Apps carry routes and routes need something to resolve them, so redkite derives
+exactly one proxy. It is not listed under `services`, and a service by that
+name is refused. What it runs and what goes around the block redkite renders is
+`proxy`:
+
+```ts
+proxy: nginx({
+  maxBodySize: "1024M",
+  server: ["server_tokens off;", "add_header X-Frame-Options SAMEORIGIN;"],
+  location: ["proxy_read_timeout 300s;", "proxy_set_header Upgrade $http_upgrade;"],
+}),
+```
+
+`server` lines go inside the server block above the locations, `location` lines
+inside every location. Both are written as nginx sees them, semicolons and all.
+
+**A line replaces rather than repeats.** nginx refuses a second
+`proxy_read_timeout` outright instead of letting the later one win, so
+`proxy_read_timeout 300s;` takes the place of the 30s redkite would have set. A
+header keeps its own name as part of that, so `proxy_set_header Host $host;`
+replaces only the Host header and leaves the other three alone.
+
+The upstreams, the location per route, the failover and `listen` stay derived.
+A `listen` in the server block is refused: the published port maps onto the one
+inside the container, so only one side of that may say it.
 
 ### Services
 
@@ -513,6 +570,17 @@ The same is true of the migrations and checks that run in the builder image:
 they are given `--env-file` too, rather than finding a file the build left
 behind.
 
+A vault holds dotenv, and docker's env file is a different format wearing the
+same clothes: a quote there is part of the value, not around it. So the file
+handed to `--env-file` is the parsed values rather than the text that held them,
+and `DATABASE_URL="postgres://..."` reaches the process without the quotes it
+was stored with. The `.env` mounted during the build stays exactly as the vault
+wrote it, because the thing reading it there is a dotenv parser.
+
+A value spanning several lines has no spelling docker would read back, so one is
+refused by name rather than truncated. Anything shaped like that is a
+[file secret](#a-secret-the-app-needs-as-a-file).
+
 If you do want one in the image, say so, in a build step where the mount is
 still there:
 
@@ -520,12 +588,27 @@ still there:
 steps: ["yarn build", "cp .env dist/.env"],
 ```
 
-`files` is the other way to put a credential in an image on purpose, for the
-ones that have to be a file rather than a variable:
+#### A secret the app needs as a file
+
+`files` maps a container path to the item whose contents land there, for a
+credential that has to be a file rather than a variable:
 
 ```ts
-files: { "/app/service-account.json": bitwarden.item("...") },
+files: {
+  "/etc/creds/service-account.json": bitwarden.item("..."),
+  "/app/private.pem": bitwarden.item("..."),
+},
 ```
+
+It is copied into the runtime image, after the output has landed, so it is
+there before the process starts and survives a restart. The directory is made
+first, so the path does not have to be one the image already has. Each one is
+mounted as its own build secret, and lands `-r--------` owned by root.
+
+This is the deliberate exception to nothing-from-a-vault-in-an-image: it is
+named, at a path the config chose, and anyone who can pull the image can read
+it. For a credential that should not be in a layer, put it in the environment
+instead and have the app write it out itself.
 
 ## Hooks
 
@@ -618,6 +701,24 @@ there is nothing to set before a step can use it.
 
 A step naming an app the deployment does not have fails before the run starts
 rather than half way through it.
+
+#### Saying which machine the migration goes through
+
+A migration reaches its database through one particular machine, and the step
+runs on whatever host the environment deploys to. Naming that machine turns a
+move nobody rechecked into a refusal:
+
+```ts
+migrate({
+  app: "backend",
+  command: "yarn db:migrate",
+  through: "deploy@staging.acme.example",
+})
+```
+
+Deploy that environment to any other host and the run stops before it touches
+anything. It is optional, and a deployment that leaves it out simply runs the
+migration wherever it deploys.
 
 #### The network a step runs on
 
@@ -919,15 +1020,22 @@ open and its output rolls under a title that stays put; a step that finishes
 shuts to a single line carrying what it cost.
 
 ```
-[01:18]   ✔ setup                                                             4s
-[01:18]   ✔ build                                                             9s
-[01:18] ❯ ▾ Building web  yarn build                                       1m09s
+00:04   ✔ setup                                                             4s
+00:13   ✔ build                                                            13s
+01:18 ⠙ ▾ Building web: yarn build  quiet 8s                             1m05s
         │ #15 [builder 10/10] RUN yarn build
         │    ▲ Next.js 15.1.6
         │    Creating an optimized production build ...
+        · verify
+        · swap
+        · cleanup
 
-↑↓ move · enter open · shift+↑ latest · + open · - collapse all · q quit
+↑↓ move · enter open · shift+↑ latest · +/- all · w wrap · q quit
 ```
+
+The points under the open step are the ones the run will still walk. A deploy
+knows its whole list before it starts, so how much is left is on screen from the
+first frame rather than only at the end.
 
 | Key | What it does |
 | --- | --- |
@@ -937,11 +1045,20 @@ shuts to a single line carrying what it cost.
 | `shift+↓` | Jump to the first step |
 | `+` | Open the step running now, from anywhere, and keep opening the ones after it |
 | `-` | Shut everything, and stop opening what comes next |
+| `w` | Wrap long lines instead of cutting them, for reading an error that does not fit |
 | `q` | Stop the deploy. Press again to kill it |
 
 The gutter counts the whole run; the number on the right counts the step, and
-freezes at what it cost the moment it finishes. Nothing drawn on the alternate
-screen survives it, so the run is written out again on the way out.
+freezes at what it cost the moment it finishes. A spinner turns beside the step
+running now, and stops with it, which is how a slow step is told from a wedged
+one at a glance. When that step has said nothing for a while the row says
+`quiet 45s`, because a build that has stopped talking looks exactly like a build
+that has stopped.
+
+Nothing drawn on the alternate screen survives it, so the run is written out
+again on the way out. A step that failed has the end of its own output written
+with it, since the reason it stopped is in there and the frames carrying it are
+gone.
 
 Colour separates where you are from what is happening. The step under the
 cursor is cyan, the step running now is yellow, and a failed one is red and
@@ -955,8 +1072,11 @@ wide, and a row measured with one in it is a row that wraps.
 
 Every row is one terminal line. A line too long for the width is cut with an
 ellipsis rather than wrapped, because a wrapped row pushes everything under it
-out of a frame counted in rows. `--full` is the way to read the untrimmed thing:
-no view, no collapsing, every line of every step streamed in full as it arrives.
+out of a frame counted in rows. `w` turns wrapping on for the times that trade
+is worth making, and the space a step is given is then counted in rows rather
+than lines, so a wrapped line gets the rows it needs. `--full` is the way to
+read the untrimmed thing: no view, no collapsing, every line of every step
+streamed in full as it arrives.
 
 A pipe, a CI log or `REDKITE_PLAIN=1` gets that same streamed form, with
 `--verbose` adding every host command beside it.

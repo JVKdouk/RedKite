@@ -31,13 +31,22 @@ export function nodeApp(options: NodeAppOptions): BuildSpec {
     output: options.output,
     carry: options.carry ?? [],
     entrypoint: options.entrypoint,
-    // Not the app's own node_modules: a step after the build runs in this image
-    // without the mounts, and a migration that cannot find prisma is what a
-    // cache mount instead of a layer looks like from the outside
-    caches: options.caches ?? ["yarn", "npm", "modules"],
+    // The package manager's own cache, and nothing else. node_modules used to
+    // be a mount too, and BuildKit drops a cache mount whenever it likes while
+    // keeping the layer that filled it: the install then does not re-run and
+    // the modules are simply gone. What that looks like is a build saying it
+    // cannot find a dependency the manifest plainly lists.
+    //
+    // Installed into the layer instead, they are there for every step below,
+    // for a migration run in this image afterwards, and for a check. The
+    // manager's cache still makes the install itself fast
+    caches: options.caches ?? ["yarn", "npm"],
     submodules: options.submodules ?? false,
-    // The checkout arrives complete, so this is what a build step itself needs
-    aptPackages: ["git"],
+    // The checkout arrives complete, so this is what a build step itself needs.
+    // openssh-client is for the dependencies it resolves rather than the
+    // repository: a git+ssh entry in a manifest is fetched during the install,
+    // and git cannot do that without an ssh to run
+    aptPackages: ["git", "openssh-client"],
     runtimePackages: ["curl"],
     runtimeSteps: [],
   };

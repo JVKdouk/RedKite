@@ -4,7 +4,7 @@ import { Docker } from "../docker.js";
 import type { Host } from "../host.js";
 import { localHost } from "../localHost.js";
 import { silent, type Log } from "../log.js";
-import { renderNginx } from "../nginx.js";
+import { renderProxy } from "../services/proxy.js";
 import { addressOf, RUNS, SLOTS, type Run } from "../pipeline.js";
 import { listRefs, type SecretStores } from "../secrets/refs.js";
 import { pluginSteps, storeFor } from "../plugin.js";
@@ -15,7 +15,8 @@ import { topologyFor, type Topology } from "../topology.js";
 import type { Deployment, DeployHost } from "../types.js";
 
 import { needsAgent, requireAgent } from "./agent.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, projectRoot } from "./config.js";
+import { loadDotenv } from "./dotenv.js";
 import { createLog, describeFailure } from "./log.js";
 
 // One command that reads the config and does everything under it: the agent,
@@ -146,7 +147,11 @@ async function dispatch(argv: string[]) {
 
   const configPath = flag(argv, "--config");
 
-  if (command === "plan") return await plan(environment, configPath);
+  // Before anything reads a credential out of the environment, and only where
+  // the environment does not already say. What the job set wins over a file
+  const read = loadDotenv(projectRoot(configPath), environment);
+
+  if (command === "plan") return await plan(environment, configPath, read);
   if (command === "rollback" || command === "down") {
     return await recover(command, environment, configPath);
   }
@@ -205,13 +210,14 @@ function asLog(say: (message: string) => void): Log {
   return Object.assign(say, { warn: say, fail: say, done: say, step: () => silent.step("") });
 }
 
-async function plan(environment: string, configPath?: string) {
+async function plan(environment: string, configPath?: string, read: string[] = []) {
   const config = await loadConfig(configPath);
   const topology = topologyFor(config, environment);
 
   const say = (message = "") => process.stdout.write(`${message}\n`);
 
   say(`# ${config.project} · ${environment}\n`);
+  if (read.length > 0) say(`read      ${read.join(", ")}`);
   say(`network   ${topology.network}  ${topology.cidr}`);
   say(`branch    ${topology.branch}`);
   // A verify environment publishes nothing, because nothing in one serves
@@ -260,7 +266,7 @@ async function plan(environment: string, configPath?: string) {
   if (!serves) return;
 
   say(`\n# rendered nginx ${"-".repeat(44)}\n`);
-  say(renderNginx(topology, config.maxBodySize));
+  say(renderProxy(topology, config.proxy));
 }
 
 // What is running against what this file says should be. Services outlive a

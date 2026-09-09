@@ -20,15 +20,14 @@ const TODAY = {
   backRetiredAddress: "172.255.0.23",
   backCurrentAddress: "172.255.0.24",
   backLogsVolume: "acme-staging-backend-logs",
-  // No app-modules here: neither example app has a dir, so its target is the
-  // root's and the topology drops it.
+  // The package managers' own caches and Next's, and nothing holding
+  // node_modules: dropping one of these makes a build slower, and dropping one
+  // that held the modules makes it fail
   caches: [
     "backend-staging-yarn-cache",
     "backend-staging-npm-cache",
-    "backend-staging-modules-cache",
     "frontend-staging-yarn-cache",
     "frontend-staging-npm-cache",
-    "frontend-staging-modules-cache",
     "frontend-staging-next-app-cache",
   ],
 };
@@ -228,6 +227,17 @@ describe("topology", () => {
     assert.throws(() => defineDeployment(both({ tag: "v1", commit: "abc" })), /different commits/);
     assert.doesNotThrow(() => defineDeployment(both({ tag: "v1" })));
     assert.doesNotThrow(() => defineDeployment(both({ branch: "main" })));
+  });
+
+  // The proxy is derived rather than listed, and it already has this name.
+  // Two containers on one name is something nothing downstream can tell apart
+  it("rejects a service called what the derived proxy is called", () => {
+    const clashing = {
+      ...authored,
+      services: [...authored.services, { name: "nginx", image: "nginx:stable" }],
+    };
+
+    assert.throws(() => defineDeployment(clashing), /a service cannot be called that/);
   });
 
   it("rejects two apps on one route", () => {

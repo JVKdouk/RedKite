@@ -25,6 +25,9 @@ export type BuildContext = {
   files: Record<string, string>;
   branch: string;
   environment: string;
+  // Whether an agent is there to forward into the build. A dependency fetched
+  // over ssh needs one, and asking for a mount nothing is behind fails outright
+  agent?: boolean;
   detail?: (message: string) => void;
   // Prints what the build itself wrote, line by line as it runs
   output?: (line: string) => void;
@@ -33,7 +36,7 @@ export type BuildContext = {
 // Bumped when the pipeline changes shape without the config changing. The tag
 // below is what tells a host it already holds an image, and a host that trusts
 // the commit alone serves the last pipeline's output forever
-const PIPELINE = "4";
+const PIPELINE = "6";
 
 export type BuildResult = {
   release: string;
@@ -76,6 +79,7 @@ export async function build(
     path: app.path && resolve(app.path),
     include: app.include,
     ref: refOf(app, context.branch),
+    output: context.output,
     submodules: spec.submodules,
     detail,
   });
@@ -115,6 +119,7 @@ export async function build(
         secrets.files.map((file) => [file.path, file.id]),
       ),
       dir: app.dir,
+      agent: context.agent,
     }),
   );
 
@@ -127,6 +132,7 @@ export async function build(
   );
 
   const invocation = {
+    ssh: context.agent,
     context: source.tree,
     dockerfile,
     secrets: Object.fromEntries(
@@ -239,6 +245,9 @@ function fingerprintOf(app: AppSpec, context: BuildContext, release: string) {
     .update(PIPELINE)
     .update(release)
     .update(app.dir ?? "")
+    // It changes the Dockerfile, so an image built without one is not the
+    // image a build with one would produce
+    .update(String(context.agent ?? false))
     .update(JSON.stringify(app.build))
     .update(context.env)
     .update(JSON.stringify(Object.entries(context.files).sort()))

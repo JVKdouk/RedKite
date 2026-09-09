@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,76 +112,90 @@ describe("reaching the Bitwarden CLI", () => {
   });
 });
 
-// A session obtained elsewhere is the whole of what a key in the environment
-// buys: no api credentials, no master password, two fewer round trips
-describe("unlocking the vault", () => {
-  const calls = join(tmpdir(), `redkite-bw-key-${process.pid}`);
+// Bitwarden is two services. Secrets Manager opens with an access token and is
+// what a deploy wants; the password manager wants a session or a master
+// password. Handing one service's credential to the other is how a deploy ends
+// up waiting on a prompt nobody can see.
+describe("which Bitwarden a deployment reads", () => {
+  const calls = join(tmpdir(), `redkite-bw-which-${process.pid}`);
+  const managerCalls = join(tmpdir(), `redkite-bws-which-${process.pid}`);
 
   after(async () => {
-    await rm(calls, { force: true });
-    delete process.env["BW_KEY"];
+    await Promise.all([rm(calls, { force: true }), rm(managerCalls, { force: true })]);
+    for (const key of ["BW_KEY", "BW_CLIENT_ID", "BW_CLIENT_SECRET", "BW_PASSWORD"]) {
+      delete process.env[key];
+    }
   });
 
-  const opened = async () => {
+  const pointAt = async () => {
+    await Promise.all([rm(calls, { force: true }), rm(managerCalls, { force: true })]);
+
     process.env["BW_CALLS"] = calls;
+    process.env["BWS_CALLS"] = managerCalls;
     process.env["REDKITE_BW_BIN"] = new URL("./fixtures/bw", import.meta.url).pathname;
-
-    const open = storeFor([bitwarden()], "bitwarden");
-    assert.ok(open, "the vault plugin answers for its own provider");
-
-    const store = await open({ detail: () => {} });
-    await store.read("item");
-
-    return (await readFile(calls, "utf8")).trim().split("\n");
+    process.env["REDKITE_BWS_BIN"] = new URL("./fixtures/bws", import.meta.url).pathname;
   };
 
-  it("uses BW_KEY without logging in or unlocking", async () => {
-    await rm(calls, { force: true });
-    process.env["BW_KEY"] = "a-session-from-somewhere-else";
+  const read = async (plugin: ReturnType<typeof bitwarden>) => {
+    const open = storeFor([plugin], "bitwarden");
+    assert.ok(open);
 
-    const issued = await opened();
+    const store = await open({ detail: () => {} });
+    return await store.read("00000000-0000-4000-8000-000000000001");
+  };
 
-    assert.ok(!issued.some((line) => line.startsWith("login")), issued.join(" | "));
-    assert.ok(!issued.some((line) => line.startsWith("unlock")), issued.join(" | "));
-    assert.ok(issued.some((line) => line.startsWith("get")));
+  it("reads Secrets Manager by default, with BW_KEY as the access token", async () => {
+    await pointAt();
+    process.env["BW_KEY"] = "an-access-token";
+
+    assert.equal(await read(bitwarden()), "A=1\n");
+
+    const issued = (await readFile(managerCalls, "utf8")).trim().split("\n");
+    assert.ok(issued.some((line) => line.startsWith("secret get")), issued.join(" | "));
+    assert.ok(!existsSync(calls), "and the password manager is never reached for");
   });
 
-  it("logs in and unlocks when there is no key to use", async () => {
-    await rm(calls, { force: true });
+  // The one that was hanging: a Secrets Manager token given to the password
+  // manager, which decided the vault was locked and asked for a password
+  it("says what is wrong rather than reaching for the wrong service", async () => {
+    await pointAt();
+    delete process.env["BW_KEY"];
+
+    const open = storeFor([bitwarden()], "bitwarden");
+
+    await assert.rejects(() => open!({ detail: () => {} }), /access token, not a password/);
+  });
+
+  it("reads the password manager when it is told to", async () => {
+    await pointAt();
+    process.env["BW_KEY"] = "a-session";
+
+    assert.equal(await read(bitwarden({ secrets: false })), "A=1\n");
+
+    const issued = (await readFile(calls, "utf8")).trim().split("\n");
+    assert.ok(issued.some((line) => line.startsWith("get")));
+    assert.ok(!issued.some((line) => line.startsWith("unlock")), "the session skips unlocking");
+  });
+
+  it("takes the token on the object rather than from the environment", async () => {
+    await pointAt();
+    delete process.env["BW_KEY"];
+
+    assert.equal(await read(bitwarden({ secrets: "handed-in" })), "A=1\n");
+  });
+
+  it("falls back to the api credentials for the password manager", async () => {
+    await pointAt();
     delete process.env["BW_KEY"];
 
     process.env["BW_CLIENT_ID"] = "id";
     process.env["BW_CLIENT_SECRET"] = "secret";
     process.env["BW_PASSWORD"] = "password";
 
-    const issued = await opened();
-
-    assert.ok(issued.some((line) => line.startsWith("login")));
-    assert.ok(issued.some((line) => line.startsWith("unlock")));
-  });
-
-  // Given on the object rather than read from the environment, for a config
-  // that would rather name its own variable
-  it("takes a session handed to it directly", async () => {
-    await rm(calls, { force: true });
-    delete process.env["BW_KEY"];
-
-    process.env["BW_CALLS"] = calls;
-    process.env["REDKITE_BW_BIN"] = new URL("./fixtures/bw", import.meta.url).pathname;
-
-    const open = storeFor([bitwarden({ secrets: "handed-in" })], "bitwarden");
-    await open?.({ detail: () => {} });
+    await read(bitwarden({ secrets: false }));
 
     const issued = (await readFile(calls, "utf8")).trim().split("\n");
-    assert.ok(!issued.some((line) => line.startsWith("unlock")), issued.join(" | "));
-  });
-
-  it("says which variables it looked at when there is nothing to unlock with", async () => {
-    delete process.env["BW_KEY"];
-    delete process.env["BW_CLIENT_ID"];
-
-    const open = storeFor([bitwarden()], "bitwarden");
-
-    await assert.rejects(() => open!({ detail: () => {} }), /Neither BW_KEY nor BW_CLIENT_ID is set/);
+    assert.ok(issued.some((line) => line.startsWith("login")));
+    assert.ok(issued.some((line) => line.startsWith("unlock")));
   });
 });

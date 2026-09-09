@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import config from "./deployment.js";
-import { nextApp, renderDockerfile, renderDockerignore, topologyFor } from "../src/index.js";
+import { nextApp, nodeApp, renderDockerfile, renderDockerignore, topologyFor } from "../src/index.js";
 
 // The Dockerfile is the pipeline, and the layer order is the part worth
 // pinning: it is the difference between a deploy and a cold build, and nothing
@@ -193,7 +193,9 @@ describe("an app in a directory of its own", () => {
     const file = rendered("apps/web");
 
     assert.ok(file.includes("COPY package.jso[n] /app/package.json"));
-    assert.ok(file.includes("target=/app/node_modules"));
+    // The install runs before the workdir moves into the app, which is what
+    // puts the modules where a workspace hoists them
+    assert.ok(at(file, "yarn install") < at(file, "WORKDIR /app/apps/web"));
   });
 
   it("reads the output and what it carries from the app", () => {
@@ -281,9 +283,12 @@ describe("a Next app that is not standalone", () => {
     assert.ok(!app.build.caches.includes("app-modules"));
   });
 
-  it("keeps node_modules out of the cache so it ships", () => {
-    assert.ok(!rendered(false).includes("node_modules"));
-    assert.ok(rendered(true).includes("target=/app/node_modules"));
+  // BuildKit drops a cache mount whenever it likes while keeping the layer
+  // that filled it. The install then does not re-run and the modules are gone,
+  // which reads as a build that cannot find what the manifest plainly lists
+  it("never mounts node_modules, so it is in the layer that installed it", () => {
+    assert.ok(!rendered(false).includes("target=/app/node_modules"));
+    assert.ok(!rendered(true).includes("target=/app/node_modules"));
   });
 
   it("ships only the standalone output otherwise", () => {
@@ -291,6 +296,117 @@ describe("a Next app that is not standalone", () => {
 
     assert.ok(file.includes("COPY --from=builder /app/apps/web/.next/standalone /app"));
     assert.match(file, /CMD .*node server\.js/);
+  });
+});
+
+// A cache mount is dropped whenever BuildKit likes, and the layer that filled
+// it is not. Anything a later step must find belongs in the layer
+describe("what a preset caches", () => {
+  const modules = ["modules", "app-modules"];
+
+  it("caches the package managers and nothing that holds node_modules", () => {
+    const spec = nodeApp({ steps: [], output: "/app", entrypoint: ["node"] });
+
+    assert.deepEqual(spec.caches, ["yarn", "npm"]);
+  });
+
+  it("caches Next's own build cache, which only costs time when it goes", () => {
+    const standalone = nextApp();
+    const whole = nextApp({ standalone: false });
+
+    assert.ok(standalone.caches.includes("next-app"));
+    assert.ok(whole.caches.includes("next-app"));
+
+    for (const name of modules) {
+      assert.ok(!standalone.caches.includes(name), name);
+      assert.ok(!whole.caches.includes(name), name);
+    }
+  });
+});
+
+// A manifest's git dependencies are fetched during the install, inside the
+// build, long after the checkout on the host is done. That needs an agent, an
+// ssh to run, and something to compare a host key against
+describe("what the build can reach over ssh", () => {
+  const render = (agent?: boolean) => {
+    const app = config.apps.find((item) => item.name === "backend")!;
+
+    return renderDockerfile(app.build, {
+      caches: {},
+      port: 3001,
+      release: "abc1234",
+      environment: "staging",
+      envSecret: "backend-env",
+      fileSecrets: {},
+      agent,
+    });
+  };
+
+  it("installs an ssh for git to run", () => {
+    assert.match(render(true), /apk add --no-cache [^\n]*openssh-client/);
+  });
+
+  it("mounts the agent onto the install and the steps", () => {
+    const rendered = render(true).split("\n").filter((line) => line.startsWith("RUN "));
+    const reaching = rendered.filter((line) => line.includes("--mount=type=ssh"));
+
+    assert.ok(reaching.some((line) => line.includes("yarn install")), "the install");
+    assert.ok(reaching.some((line) => line.includes("yarn build")), "and the steps");
+  });
+
+  // Nothing to compare a first sight against, and a refusal is a dependency
+  // it cannot fetch
+  it("tells git to accept a host it has not seen", () => {
+    assert.match(render(true), /ENV GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"/);
+  });
+
+  // Asking for a mount nothing is behind fails the build outright, so a run
+  // without an agent must not ask
+  it("asks for none of it when there is no agent", () => {
+    const rendered = render(false);
+
+    assert.ok(!rendered.includes("--mount=type=ssh"));
+    assert.ok(!rendered.includes("GIT_SSH_COMMAND"));
+  });
+});
+
+// A credential that has to be a file rather than a variable. This one is put
+// into the image on purpose, which is the whole difference between it and the
+// environment: it is named, at a path the config chose
+describe("a secret an app wants as a file", () => {
+  const withFiles = (paths: string[]) => {
+    const app = config.apps.find((item) => item.name === "backend")!;
+
+    return renderDockerfile(app.build, {
+      caches: {},
+      port: 3001,
+      release: "abc1234",
+      environment: "staging",
+      envSecret: "backend-env",
+      fileSecrets: Object.fromEntries(paths.map((path, index) => [path, `secret-${index}`])),
+    });
+  };
+
+  // cp makes no directory, so a credential anywhere but beside the code used
+  // to fail the build outright
+  it("makes the directory before copying into it", () => {
+    const rendered = withFiles(["/etc/creds/service-account.json"]);
+
+    assert.match(rendered, /mkdir -p \/etc\/creds && cp \/run\/secrets\/secret-0/);
+  });
+
+  it("mounts each one as its own secret", () => {
+    const rendered = withFiles(["/etc/creds/one.json", "/app/two.pem"]);
+
+    assert.match(rendered, /--mount=type=secret,id=secret-0 /);
+    assert.match(rendered, /--mount=type=secret,id=secret-1 /);
+  });
+
+  // After the output, or the copy that lands /app would take it away again
+  it("puts them in after the output has landed", () => {
+    const rendered = withFiles(["/app/creds.json"]);
+
+    assert.ok(rendered.indexOf("secrets/secret-0") > rendered.lastIndexOf("COPY --from=builder"));
   });
 });
 

@@ -15,6 +15,8 @@ export type BuildInvocation = {
   tags: string[];
   // Secret id to a path on the host holding its contents
   secrets?: Record<string, string>;
+  // Forwards the agent this shell holds into the build
+  ssh?: boolean;
   // Stops at the builder stage, for the image a step before the swap runs in
   target?: string;
 };
@@ -174,6 +176,9 @@ class DockerImage {
       ...Object.entries(spec.secrets ?? {}).map(
         ([id, path]) => `--secret id=${id},src=${path}`,
       ),
+      // Forwards this shell's agent into the build, which is how a dependency
+      // fetched over ssh is authenticated
+      ...(spec.ssh ? ["--ssh default"] : []),
       ...(spec.target ? [`--target ${spec.target}`] : []),
       spec.context,
     ].join(" ");

@@ -1,7 +1,7 @@
 import { SPEC_LABEL, type Docker } from "../docker.js";
 import type { Host } from "../host.js";
 import type { Log } from "../log.js";
-import { LISTEN_PORT } from "../nginx.js";
+import { LISTEN_PORT } from "./proxy.js";
 import { readEnv, type SecretStores } from "../secrets/refs.js";
 import type { ServiceTopology, Topology } from "../topology.js";
 import type { ServiceSpec } from "../types.js";

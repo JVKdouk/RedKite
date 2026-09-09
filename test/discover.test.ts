@@ -75,14 +75,25 @@ describe("finding the config", () => {
 
   // Saying where the files are and not putting them there is a mistake worth
   // stopping for, rather than a reason to keep looking further up
-  it("stops rather than searching past a directory that was named", async () => {
+  // The directory holds redkite's files, and the deployment need not be one of
+  // them: it may hold only the environments, with the deployment above them
+  it("keeps looking when the directory it was pointed at holds no deployment", async () => {
     const root = await project({
       "package.json": JSON.stringify({ redkite: { directory: "deploy" } }),
       "deploy/.keep": "",
       "redkite.config.ts": "export default {};\n",
     });
 
-    assert.throws(() => discover(root), /points redkite at .*deploy/);
+    assert.equal(discover(root), join(root, "redkite.config.ts"));
+  });
+
+  it("stops when the directory it was pointed at is not there at all", async () => {
+    const root = await project({
+      "package.json": JSON.stringify({ redkite: { directory: "gone" } }),
+      "redkite.config.ts": "export default {};\n",
+    });
+
+    assert.throws(() => discover(root), /points redkite at .*gone, which is not there/);
   });
 
   it("ignores a package.json that says nothing about redkite", async () => {
@@ -276,5 +287,65 @@ describe("which files beside the deployment are environments", () => {
     });
 
     await assert.rejects(() => loadEnvironments(root), /defined by both/);
+  });
+});
+
+// The directory package.json names is where redkite's files live, and the
+// deployment does not have to be one of them: a repository may keep the
+// deployment at its root and the environments together under one roof
+describe("environments in the directory package.json names", () => {
+  const env = `export default { branch: "staging", subnet: "10.0.0", publicPort: 80 };\n`;
+  const points = JSON.stringify({ redkite: { directory: "deploy" } });
+
+  it("reads them when the deployment sits above them", async () => {
+    const root = await project({
+      "package.json": points,
+      "redkite.config.ts": "export default {};\n",
+      "deploy/redkite.staging.config.ts": env,
+    });
+
+    assert.equal(discover(root), join(root, "redkite.config.ts"));
+
+    const config = await loadConfig(join(root, "redkite.config.ts"));
+    assert.deepEqual(Object.keys(config.environments ?? {}), ["staging"]);
+  });
+
+  it("still reads them when the deployment is in there too", async () => {
+    const root = await project({
+      "package.json": points,
+      "deploy/redkite.config.ts": "export default {};\n",
+      "deploy/redkite.staging.config.ts": env,
+    });
+
+    assert.equal(discover(root), join(root, "deploy", "redkite.config.ts"));
+
+    const config = await loadConfig(join(root, "deploy", "redkite.config.ts"));
+    assert.deepEqual(Object.keys(config.environments ?? {}), ["staging"]);
+  });
+
+  // One place or the other, because two files for one environment is two
+  // answers and nothing here should pick between them
+  it("refuses the same environment in both places", async () => {
+    const root = await project({
+      "package.json": points,
+      "redkite.config.ts": "export default {};\n",
+      "redkite.staging.config.ts": env,
+      "deploy/redkite.staging.config.ts": env,
+    });
+
+    await assert.rejects(
+      () => loadConfig(join(root, "redkite.config.ts")),
+      /sits both beside the deployment and in/,
+    );
+  });
+
+  // Naming somewhere that does not exist is still a mistake worth stopping for
+  it("refuses a directory that is not there", async () => {
+    const root = await project({
+      "package.json": JSON.stringify({ redkite: { directory: "gone" } }),
+      "redkite.config.ts": "export default {};\n",
+    });
+
+    assert.throws(() => discover(root), /which is not there/);
   });
 });

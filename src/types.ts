@@ -68,6 +68,22 @@ export type SecretRef = {
 // One entry, or several merged in order. A key set by a later ref wins
 export type SecretRefs = SecretRef | SecretRef[];
 
+// The proxy every app's route is resolved by. Written with nginx(), because
+// what redkite derives is the server block and the upstreams and what this
+// says is everything around them
+export type ProxySpec = {
+  // Image it runs, pinned rather than floating
+  image?: string;
+  // Largest request body it accepts before answering 413
+  maxBodySize?: string;
+  // Lines put inside the server block, above the locations. For what belongs
+  // to the whole server: a redirect, a rate limit zone, an error page
+  server?: string[];
+  // Lines put inside every location, below what redkite sets, so one of these
+  // replaces a header rather than being replaced by it
+  location?: string[];
+};
+
 export type ServiceSpec = {
   // Identifies the service, and becomes part of its container name
   name: string;
@@ -239,10 +255,9 @@ export type Deployment = {
   // them: the thing that differs between staging and production is a file, not
   // a key several levels down a literal
   environments?: Record<string, Environment>;
-  // Largest request body the proxy accepts before answering 413
-  maxBodySize?: string;
-  // Image the derived proxy runs, pinned rather than floating
-  proxyImage?: string;
+  // The derived proxy, which is not something a deployment lists: apps carry
+  // routes, routes need something to resolve them, so there is exactly one
+  proxy?: ProxySpec;
   // Long-lived containers shared by the apps, not rebuilt on every deploy.
   // The proxy is not one of them: apps with routes imply exactly one, so it is
   // derived rather than listed
