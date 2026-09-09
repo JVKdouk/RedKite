@@ -1,0 +1,19 @@
+{
+  "name": "redkite-plugin-announce",
+  "version": "0.1.0",
+  "description": "Posts to a webhook once a deploy has swapped and stayed healthy",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc index.ts --outDir dist --module nodenext --moduleResolution nodenext --target es2022 --strict --declaration",
+    "prepare": "npm run build"
+  },
+  "peerDependencies": {
+    "redkite": ">=0.1.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

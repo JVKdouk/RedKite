@@ -26,6 +26,7 @@ function recorder(answers: Record<string, string> = {}) {
     write: async (name) => `/tmp/redkite/${name}`,
     pipe: async () => ({ code: 0, stdout: "", stderr: "" }),
     stop: async () => 0,
+    final: sh,
     directory: "/tmp/redkite",
     cache: "/home/ubuntu/.cache/redkite",
   };

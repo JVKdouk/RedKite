@@ -1,4 +1,4 @@
-import type { BuildSpec, CarryPath, SourcemapSpec } from "../types.js";
+import type { BuildSpec, CarryPath } from "../types.js";
 
 type NodeAppOptions = {
   builder?: string;
@@ -12,7 +12,6 @@ type NodeAppOptions = {
   carry?: CarryPath[];
   submodules?: boolean;
   caches?: string[];
-  sourcemaps?: SourcemapSpec;
 };
 
 export function nodeApp(options: NodeAppOptions): BuildSpec {
@@ -41,6 +40,5 @@ export function nodeApp(options: NodeAppOptions): BuildSpec {
     aptPackages: ["git"],
     runtimePackages: ["curl"],
     runtimeSteps: [],
-    sourcemaps: options.sourcemaps,
   };
 }

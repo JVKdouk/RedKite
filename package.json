@@ -1,6 +1,6 @@
 {
   "name": "redkite",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Blue-green Docker deployment from one config file, over ssh. No engine, no agent, no dependencies.",
   "keywords": [
     "deploy",

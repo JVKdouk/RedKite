@@ -1,4 +1,5 @@
 import { environmentOf } from "./config.js";
+import { envFlags } from "./environment.js";
 import type { Built, Plan, Step } from "./pipeline.js";
 import type { Topology } from "./topology.js";
 import type { AppSpec, StepNetwork } from "./types.js";
@@ -48,10 +49,16 @@ export function migrate(options: MigrateOptions): Step<`swap:before:${string}`> 
       const image = builderOf(input, options.app);
       context.task.detail(`${options.app}: ${options.command}`);
 
+      // Nothing from the vault is in the image, so a migration reads its
+      // database url from the environment it is given rather than from a file
+      // the build left behind
+      const app = context.config.apps.find((item) => item.name === options.app);
+
       await context.docker.runOrThrow(
         [
           "run --rm",
           ...attachment(options.network ?? "host", context.topology),
+          ...(app ? await envFlags(app, context) : []),
           "--workdir /app",
           image,
           ...command,
@@ -88,12 +95,6 @@ export function builderOf(input: Built, name: string) {
   if (app?.builderTag) return app.builderTag;
 
   throw new Error(`${name} has no builder image, so nothing can be run in it`);
-}
-
-type SentryOptions = { stripFromImage: string };
-
-export function sentry(options: SentryOptions) {
-  return { provider: "sentry" as const, stripFromImage: options.stripFromImage };
 }
 
 export function routeOf(app: AppSpec) {

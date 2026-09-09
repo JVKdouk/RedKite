@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 
 import type { Host, OnLine, Result } from "./host.js";
 import { quote, spawnCollect } from "./shell.js";
+import type { HostKeys } from "./types.js";
 
 // The deploy host, reached over ssh. The agent is forwarded rather than a key,
 // there is nothing to forward, and the agent travels with the connection so the
@@ -23,23 +24,40 @@ export type SshOptions = {
   shell?: Shell;
   directory?: string;
   cache?: string;
+  // How the host's key is checked. Defaults to accept-new
+  hostKeys?: HostKeys;
   // Aborting kills the ssh client. The command it was carrying keeps running on
   // the other machine, which is what stop is for
   signal?: AbortSignal;
 };
 
+// What ssh calls each of them. accept-new is the default rather than no: a
+// deploy hands over a vault's contents, and the last thing it should do that
+// to is a machine that answered to the address and nothing else
+const CHECKING: Record<HostKeys, string> = {
+  "accept-new": "accept-new",
+  strict: "yes",
+  off: "no",
+};
+
 // One TCP connection and one authentication for the whole deploy. Without it
 // every command pays a handshake, which is most of what a command costs
-const MULTIPLEX = [
-  "-o",
-  "ControlMaster=auto",
-  "-o",
-  "ControlPersist=60s",
-  "-o",
-  "StrictHostKeyChecking=no",
-  // The host clones from GitHub on our behalf rather than us shipping a tree
-  "-A",
-];
+function multiplex(hostKeys: HostKeys = "accept-new") {
+  return [
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    "ControlPersist=60s",
+    "-o",
+    `StrictHostKeyChecking=${CHECKING[hostKeys]}`,
+    // Never a prompt. Unknown under strict is a refusal with a reason, and a
+    // question nobody is there to answer is a deploy that hangs
+    "-o",
+    "BatchMode=yes",
+    // The host clones from GitHub on our behalf rather than us shipping a tree
+    "-A",
+  ];
+}
 
 export async function sshHost(bastion: string, options: SshOptions = {}): Promise<Host> {
   const control = `/tmp/redkite-${randomUUID().slice(0, 8)}.control`;
@@ -57,8 +75,10 @@ export async function sshHost(bastion: string, options: SshOptions = {}): Promis
     options.shell ??
     ((command: string) => spawnCollect("sh", ["-c", command], { signal }));
 
+  const flags = multiplex(options.hostKeys);
+
   const argv = (command: string) => [
-    ...MULTIPLEX,
+    ...flags,
     "-o",
     `ControlPath=${control}`,
     bastion,
@@ -110,6 +130,10 @@ export async function sshHost(bastion: string, options: SshOptions = {}): Promis
     // rather than written to a disk at each end and copied between them
     pipe: async (local, remote) =>
       await shell(`${local} | ssh ${argv(remote).map(quote).join(" ")}`),
+
+    // Runs on the connection that is already open, and without the signal that
+    // killed whatever made it necessary
+    final: async (command) => await final(argv(command)),
 
     // Signalled where they are running, not here. Killing the client would
     // leave the build going with nothing left able to reach it

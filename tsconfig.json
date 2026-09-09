@@ -12,7 +12,7 @@
       "node"
     ],
     "paths": {
-      "dagploy": [
+      "redkite": [
         "./src/index.ts"
       ]
     },

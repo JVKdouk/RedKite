@@ -3,8 +3,11 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
+import base from "./deployment.js";
+import type { Deployment } from "../src/index.js";
 import { loadConfig } from "../src/cli/config.js";
 import { buildingHere, positional, stopper } from "../src/cli/index.js";
+import { needsAgent } from "../src/cli/agent.js";
 
 const fixture = (name: string) =>
   fileURLToPath(new URL(`./fixtures/${name}/redkite.config.ts`, import.meta.url));
@@ -195,3 +198,51 @@ describe("building here for one run", () => {
   });
 });
 
+
+// A runner has no keys and no way to be asked for one. Demanding an agent that
+// nothing will use is a deploy that cannot run where it has no reason to fail
+describe("when an agent is wanted", () => {
+  const app = { ...base.apps[0]!, repo: "git@github.com:acme/web.git" };
+  const of = (over: Partial<Deployment>): Deployment => ({ ...base, apps: [app], ...over });
+
+  // The connection itself carries the agent, whatever the apps are built from
+  it("wants one to reach another machine, whatever it clones", () => {
+    const remote = of({
+      environment: {
+        branch: "main",
+        subnet: "10.0.0",
+        publicPort: 80,
+        host: { bastion: "deploy@acme.example" },
+      },
+      apps: [{ ...app, repo: "https://github.com/acme/web.git" }],
+    });
+
+    assert.equal(needsAgent(remote, "staging"), true);
+  });
+
+  it("wants one to clone over ssh, even onto this machine", () => {
+    const here = of({ environment: { branch: "main", subnet: "10.0.0", publicPort: 80 } });
+
+    assert.equal(needsAgent(here, "staging"), true);
+  });
+
+  // A URL naming its own transport carries its own credentials
+  it("wants none for an https clone", () => {
+    const open = of({
+      environment: { branch: "main", subnet: "10.0.0", publicPort: 80 },
+      apps: [{ ...app, repo: "https://github.com/acme/web.git" }],
+    });
+
+    assert.equal(needsAgent(open, "staging"), false);
+  });
+
+  // What a checked-out runner deploying to its own docker looks like
+  it("wants none for a directory on this machine", () => {
+    const local = of({
+      environment: { branch: "main", subnet: "10.0.0", publicPort: 80 },
+      apps: [{ ...app, repo: undefined, path: "." }],
+    });
+
+    assert.equal(needsAgent(local, "staging"), false);
+  });
+});

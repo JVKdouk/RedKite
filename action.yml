@@ -1,0 +1,81 @@
+name: Redkite
+description: Build and swap a blue-green deployment over ssh, or verify one without swapping
+author: Joao Kdouk
+
+branding:
+  icon: upload-cloud
+  color: red
+
+inputs:
+  command:
+    description: plan, verify or deploy
+    required: false
+    default: deploy
+  environment:
+    description: Which environment to act on. Each one is a redkite.<name>.config.ts
+    required: false
+    default: staging
+  config:
+    description: Path to the deployment file. Found by convention when this is empty
+    required: false
+    default: ""
+  args:
+    description: Extra flags, such as --verbose or --local
+    required: false
+    default: ""
+  ssh-key:
+    description: >-
+      Private key loaded into an agent for this job. Needed to reach a deploy
+      host or to clone over ssh, and not needed at all for a run that builds
+      what the checkout already holds
+    required: false
+    default: ""
+  version:
+    description: Which redkite to run. Pinned, because an unpinned deploy tool is a different one each time
+    required: false
+    default: 0.1.7
+  node-version:
+    description: Node reads TypeScript itself from 22.18 on, which is what lets redkite ship without a build
+    required: false
+    default: "22"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    # The pinned Bitwarden CLI lands here, and a runner would install it again
+    # every run without this. Redkite itself has no dependencies to cache
+    - uses: actions/cache@v4
+      with:
+        path: ~/.cache/redkite
+        key: redkite-${{ runner.os }}-${{ inputs.version }}
+
+    # Through the environment rather than the command line, so the key is not
+    # part of any argv this job can be made to print
+    - if: inputs.ssh-key != ''
+      shell: bash
+      env:
+        REDKITE_SSH_KEY: ${{ inputs.ssh-key }}
+      run: |
+        eval "$(ssh-agent -s)"
+        printf '%s\n' "$REDKITE_SSH_KEY" | ssh-add -
+        echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+        echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+
+    - shell: bash
+      env:
+        REDKITE_COMMAND: ${{ inputs.command }}
+        REDKITE_ENVIRONMENT: ${{ inputs.environment }}
+        REDKITE_CONFIG: ${{ inputs.config }}
+        REDKITE_ARGS: ${{ inputs.args }}
+        REDKITE_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        config=""
+        if [ -n "$REDKITE_CONFIG" ]; then config="--config $REDKITE_CONFIG"; fi
+
+        npx --yes "redkite@$REDKITE_VERSION" \
+          "$REDKITE_COMMAND" "$REDKITE_ENVIRONMENT" $config $REDKITE_ARGS

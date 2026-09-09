@@ -25,8 +25,19 @@ export type Host = {
   // Signals everything this host started and answers with how many are still
   // running. Zero is the only answer that means nothing was left behind
   stop(signal: "TERM" | "KILL"): Promise<number>;
+  // A command that runs even once a stop has been asked for. Putting a swap
+  // back is the reason there is one: the abort is what made the work necessary,
+  // so it cannot also be what refuses to do it
+  final(command: string): Promise<Result>;
   close?(): Promise<void>;
 };
+
+// The same host with the stop lifted. Handed to a Docker, it gives every
+// command below it the same exemption, which is how a revert reaches the
+// containers an abort left half moved
+export function finalHost(host: Host): Host {
+  return { ...host, sh: async (command) => await host.final(command) };
+}
 
 // A streamed command keeps this many lines, so a build that prints tens of
 // megabytes still fits in the error a failure reports

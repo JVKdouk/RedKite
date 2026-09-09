@@ -155,6 +155,41 @@ describe("the ssh host", () => {
     assert.ok(args.some((arg) => arg.startsWith("ControlPath=")));
   });
 
+  // A deploy hands over a vault's contents, and the last thing it should do
+  // that to is a machine that answered to the address and nothing else
+  it("refuses a host whose key changed, without being asked to", async () => {
+    const { run, calls } = recorder();
+    await sshHost("ubuntu@example.com", { run });
+
+    assert.ok(calls[0]?.args.includes("StrictHostKeyChecking=accept-new"));
+    assert.ok(!calls[0]?.args.includes("StrictHostKeyChecking=no"));
+  });
+
+  it("checks nothing only where it was told not to", async () => {
+    const { run, calls } = recorder();
+    await sshHost("ubuntu@example.com", { run, hostKeys: "off" });
+
+    assert.ok(calls[0]?.args.includes("StrictHostKeyChecking=no"));
+  });
+
+  it("takes nothing on trust when it is asked to be strict", async () => {
+    const { run, calls } = recorder();
+    await sshHost("ubuntu@example.com", { run, hostKeys: "strict" });
+
+    assert.ok(calls[0]?.args.includes("StrictHostKeyChecking=yes"));
+  });
+
+  // A question nobody is there to answer is a deploy that hangs rather than
+  // one that fails, whichever of the three it is checking under
+  it("never leaves ssh able to ask", async () => {
+    for (const hostKeys of ["accept-new", "strict", "off"] as const) {
+      const { run, calls } = recorder();
+      await sshHost("ubuntu@example.com", { run, hostKeys });
+
+      assert.ok(calls[0]?.args.includes("BatchMode=yes"), hostKeys);
+    }
+  });
+
   // The host clones the repositories itself, which it can only do with the
   // agent this machine is holding
   it("forwards the agent", async () => {

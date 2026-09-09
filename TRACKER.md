@@ -200,3 +200,141 @@ with the line to add, then built once given it. The 3MB node_modules and the
 .env.local beside it reached neither the image nor the release, and editing
 either left the deploy cached; editing an included file rebuilt it and the
 container served the change.
+
+## Deploying from GitHub Actions
+
+- [x] The agent is asked for only where something uses it: a bastion to reach,
+      or a repository cloned over ssh. A runner with no keys can deploy what it
+      already holds, which it could not before
+- [x] `ssh-add` failing says what to do about it rather than "Command failed"
+- [x] `action.yml`, a composite action: node, the `~/.cache/redkite` cache, the
+      key into an agent for the job, and a pinned `redkite`
+- [x] `.github/workflows/check.yml` for this repository, and whole verify and
+      deploy workflows in examples/actions for the one being deployed
+- [x] README on what needs no key, why building on the host beats building on
+      the runner, concurrency, and what a cancelled job leaves running
+
+4 tests in test/config.test.ts, each reverted to check it fails. Proved with
+stub ssh binaries: a keyless runner deploying what it holds now succeeds where
+it used to throw, and one that does need a key says so usefully. The action's
+script and its agent step were both run outside Actions, the second with a
+throwaway key, to check the key reaches stdin rather than argv.
+
+## Cancel safety
+
+- [x] `Host.final`, a command the stop cannot refuse, and `finalHost` to hand a
+      whole Docker that exemption. Putting a swap back is work the abort itself
+      created, so the abort must not be what blocks it
+- [x] The swap is one guarded stretch from retiring to the health check. An
+      abort anywhere in it puts back the apps that had already moved, each on
+      its own so one failing does not strand the rest
+- [x] `revert` clears the failed slot first. An interrupted run leaves one, and
+      rename refuses rather than clobbers, so without this the new container
+      stayed live and the old one never got its name back
+- [x] `revert` no longer starts what was never there, which is the first-deploy
+      crash that has been open since the health check was written
+- [x] `rollback`, for the run that was killed rather than asked. A retired
+      container is the whole signal, and it reads that from the host
+- [x] `down`, stopping an environment's containers including the derived proxy.
+      Stopped rather than removed, so the next run adopts them
+- [x] Both wired into the example workflows, on `if: cancelled()` and
+      `if: always()`
+
+Proved against a real daemon twice over. Asked to stop mid-swap: "Putting 1
+back where they were", and the site went from the half-swapped release back to
+the one that was serving. Killed with SIGKILL mid-swap so nothing in-process
+ran: `rollback` from a fresh process put it back and parked the failed one.
+Both commands are safe to repeat and say so when there is nothing to do.
+
+## Snapshotting a database before a swap
+
+- [x] `rdsSnapshot`, through the AWS CLI. Instance or cluster, never both, and
+      waiting is opt-in because RDS captures the data when it begins
+- [x] `digitalOceanSnapshot`, over the REST API. Volume or droplet, and the
+      token is named rather than given
+- [x] Both sit at `swap:before`, so they run while the old containers serve and
+      above the migrate the config lists after them
+- [x] Both check what they can before the run starts
+
+13 tests through an injected provider, each reverted to check it fails. Run end
+to end in a real deploy: the pipeline ordered snapshot, then migrate, then swap,
+and the recorded argv was the one the AWS CLI would have received.
+
+**Not verified against the real providers.** There are no AWS or DigitalOcean
+credentials here, so what is tested is the request each plugin builds, not the
+answer either service gives back. DigitalOcean's managed-database backups being
+list-only is the reason the plugin snapshots a disk instead, and that is worth
+confirming before anyone relies on it.
+
+## Plugins, and the vault as one of them
+
+- [x] `Plugin`: a name, steps, and a store per provider tag. `Deployment.plugins`
+      is the only way any of it reaches a run
+- [x] `definePlugin` checks the plugin's own points where it is written, so a
+      typo is the plugin's failure rather than the deployment's
+- [x] Registered twice is refused, and so is a second plugin claiming a
+      provider another already resolves
+- [x] A plugin's steps and the deployment's own are checked against one another,
+      because they share one space of points
+- [x] Plugin steps lead, so a snapshot listed as a plugin runs above the
+      migration written under steps
+- [x] `bitwarden()` is the plugin; `bitwarden.item()` is the pointer an app
+      uses. A ref naming a provider nothing registers is refused before the
+      build, rather than reaching for a vault by name
+- [x] `secrets` defaults to true and unlocks with `BW_KEY`, falling back to the
+      api credentials. A string is a session handed in directly; false
+      registers the plugin without a store
+- [x] Both snapshot plugins answer with a Plugin, and check their target when
+      they are constructed rather than when the run starts
+- [x] `plan` prints what was opted into, what each plugin resolves, and which
+      plugin each step came from
+
+23 tests across plugin, plugins and secrets, each reverted to check it fails.
+Proved live: a deployment naming a bitwarden item without registering the vault
+is refused with the line to add; BW_KEY skips login and unlock; and the example
+plugin package, installed into node_modules, ran its step after a real swap and
+posted what it released.
+
+**Found while writing this.** Node refuses to strip types under node_modules,
+so a plugin package cannot ship .ts the way a config can. It has to be compiled,
+which the example package and the README now both say.
+
+## The environment never enters an image
+
+- [x] The build-time .env is mounted onto each step at the app's root rather
+      than copied into the tree. A copied file is in that layer for good, and
+      rm only hides it behind a later one
+- [x] The app container is handed `--env-file` when it is created, the same way
+      a service already was. `process.env`, not a file
+- [x] Migrations and verify checks are handed one too: the builder image no
+      longer carries a .env for them to find
+- [x] `sourcemaps` and `sentry()` removed. Their whole job was to scrub a token
+      out of a shipped .env, and nothing ships one now
+
+Proved against a real daemon on `output: "/app"`, the one shape that used to
+copy the whole tree and the .env with it. A build step asserting the file
+exists passed, so the mount is there; the runtime image has no .env in any
+layer and neither does the builder; the running container answered with the
+secret, read from process.env; and the scratch file docker read went with the
+deploy. An explicit `cp .env shipped.env` still ships one, which is the way in
+if you want it.
+
+**Two defects this closed.** The secrets never reached the runtime container at
+all for any app with a nested output, which is every nodeApp and Next
+standalone. And any app with `sourcemaps` and a nested output failed to build
+outright, the bundled example's backend included.
+
+## The name, and the host's key
+
+- [x] `redkite` everywhere. The registry already had it under this repo, and
+      the docs were the only thing still saying otherwise
+- [x] `DeployHost.hostKeys`: accept-new by default, strict, or off. The deploy
+      connection was checking nothing at all, which is the one connection a
+      vault's contents travel over
+- [x] `BatchMode=yes` under all three, so ssh can never ask a question that
+      nobody is there to answer
+
+4 tests in sshHost, each reverted to check it fails, and the argv proved with a
+fake ssh on PATH: accept-new by default, no when told off, yes when told strict.
+Cloning stays accept-new: that connection reaches GitHub rather than you, and
+making it strict would mean managing github.com's key on every deploy host.

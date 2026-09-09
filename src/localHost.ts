@@ -43,6 +43,9 @@ export async function localHost(options: LocalOptions = {}): Promise<Host> {
     // is a process group leader, so one signal reaches the whole tree
     stop: async (name) => signalEverything(name === "KILL" ? "SIGKILL" : "SIGTERM"),
 
+    // Without the signal, so a stop cannot refuse the work it created
+    final: async (command) => await spawnCollect("sh", ["-c", command]),
+
     close: async () => {
       await rm(directory, { recursive: true, force: true });
     },

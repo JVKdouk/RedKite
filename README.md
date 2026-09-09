@@ -30,8 +30,10 @@ between deploys.
 - [Requirements](#requirements)
 - [Configuration](#configuration)
 - [Hooks](#hooks)
+- [Plugins](#plugins)
 - [Verifying a build](#verifying-a-build)
 - [CLI](#cli)
+- [GitHub Actions](#github-actions)
 - [How a deploy runs](#how-a-deploy-runs)
 - [Design](#design)
 - [Contributing](#contributing)
@@ -276,7 +278,7 @@ the `branch` an environment names is not consulted at all.
 
 The release is the content of the working tree, taken with git's own addressing
 over a scratch index. It covers what is committed, what is modified and what is
-untracked, and honours `.gitignore` — which is the same set the build reads. So
+untracked, and honours `.gitignore`, which is the same set the build reads. So
 an edit you never committed is a new release and gets built, and a change under
 an ignored `node_modules` is not and does not:
 
@@ -387,6 +389,25 @@ one lockfile for every package in it, so the install has to see all of them,
 and `node_modules` is where that put it. An app with its own lockfile in a
 subdirectory is not covered by `dir` alone.
 
+### Reaching the deploy host
+
+```ts
+host: { bastion: "deploy@acme.example", hostKeys: "accept-new" }
+```
+
+The host's key is checked before anything is handed to it. `accept-new`, the
+default, trusts it the first time and refuses it if the key ever changes after
+that: no setup, and nothing to intercept once the first deploy has happened.
+`strict` refuses any host not already in `known_hosts`, which is stronger and
+means putting the key there yourself. `off` checks nothing, for a host whose
+address is handed out again and again and only where nothing on the way to it
+can listen.
+
+ssh is never left able to ask a question, whichever of the three it is under: a
+prompt nobody is there to answer is a deploy that hangs rather than one that
+fails. Cloning is separate and always `accept-new`, because the deploy host
+reaches GitHub rather than reaching you.
+
 ### Services
 
 Long-lived containers shared by the apps. The proxy is not one of them: apps
@@ -428,13 +449,54 @@ An id is a pointer, not a credential, so it belongs in the config while the
 credentials arrive at deploy time.
 
 ```ts
-secrets: bitwarden("00000000-0000-4000-8000-000000000001"),
-files: { "/app/service-account.json": bitwarden("...") },
+plugins: [bitwarden()],
+// ...
+secrets: bitwarden.item("00000000-0000-4000-8000-000000000001"),
+files: { "/app/service-account.json": bitwarden.item("...") },
 ```
 
-A deployment reading from Bitwarden wants `BW_CLIENT_ID`, `BW_CLIENT_SECRET` and
-`BW_PASSWORD` in the environment. One that does not needs nothing: redkite only
-opens the stores your config actually names.
+The vault is a [plugin](#plugins) like any other, so `bitwarden()` has to be
+registered before `bitwarden.item()` resolves to anything. A deployment that
+names a provider nothing registers is refused before it builds, rather than
+reaching for a vault by name.
+
+It unlocks with `BW_KEY`, a session obtained elsewhere, and falls back to
+`BW_CLIENT_ID`, `BW_CLIENT_SECRET` and `BW_PASSWORD` when that is not set. A
+config that would rather name its own variable passes the session in:
+`bitwarden({ secrets: process.env.MY_VAULT_SESSION })`. One that reads no
+secrets at all needs none of them: redkite only opens the stores your config
+actually names.
+
+#### Where a secret is, and where it is not
+
+**Nothing a vault resolves is ever written into an image.** During the build it
+is mounted as `.env` at the app's root for the length of each step and gone
+after it, so a build can read a credential without shipping one, and no layer
+ever holds it. Copying it in and deleting it later would not do: a deleted file
+is still readable in the layer underneath.
+
+At runtime it arrives as the container's own environment, written to the host
+and handed to `docker create --env-file`, so no value appears in an argument
+list and the file goes with the rest of the deploy's scratch. Read it from
+`process.env`; there is no `.env` to read.
+
+The same is true of the migrations and checks that run in the builder image:
+they are given `--env-file` too, rather than finding a file the build left
+behind.
+
+If you do want one in the image, say so, in a build step where the mount is
+still there:
+
+```ts
+steps: ["yarn build", "cp .env dist/.env"],
+```
+
+`files` is the other way to put a credential in an image on purpose, for the
+ones that have to be a file rather than a variable:
+
+```ts
+files: { "/app/service-account.json": bitwarden.item("...") },
+```
 
 ## Hooks
 
@@ -473,7 +535,7 @@ import { defineStep } from "redkite";
 export default defineDeployment({
   // ...
   steps: [
-    defineStep("build:after:sourcemaps", async (built, context) => {
+    defineStep("build:after:report", async (built, context) => {
       for (const app of built.apps) {
         context.task.detail(`${app.name} at ${app.release.slice(0, 7)}`);
       }
@@ -563,36 +625,180 @@ defineStep("swap:before:seed", async (built, context) => {
 });
 ```
 
-### Plugins
+### Snapshotting a database before a swap
 
-A plugin is a function answering with steps, the way `redis()` answers with a
-service spec:
+A migration that goes wrong is the one thing a blue-green swap cannot undo:
+putting the container back does not put the rows back. These take a snapshot
+first, and they sit at `swap:before` so they run while the old containers are
+still serving.
 
 ```ts
-const slack = (webhook: string) => [
-  defineStep("swap:before:announce", async (built) => {
-    await fetch(webhook, { method: "POST", body: `deploying ${built.apps.length} apps` });
-    return built;
-  }),
-  defineStep("cleanup:after:notify", async (finished) => {
-    await fetch(webhook, { method: "POST", body: `released ${finished.released.join(", ")}` });
-    return finished;
-  }),
-];
+steps: [
+  // Above the migrate, because steps run in the order they are listed
+  rdsSnapshot({ instance: "acme-production", region: "eu-west-1" }),
+  migrate({ app: "backend", command: "yarn db:migrate" }),
+]
 ```
 
-Read whatever it needs where the config is loaded, so a missing value is a
-config that fails rather than a deploy that gets most of the way through:
+`rdsSnapshot` goes through the AWS CLI, which every runner already has with the
+credentials the job was given; signing a request by hand is a page of crypto
+that nothing here could check. It takes an `instance`, or a `cluster` for
+Aurora, and refuses a config naming both. RDS captures the data when the
+snapshot begins rather than when it finishes, so it does not wait by default:
+`wait: true` turns a snapshot that silently failed into a deploy that stops
+before the migration, at the cost of however long the snapshot takes.
 
 ```ts
-const webhook = process.env.SLACK_WEBHOOK;
-if (!webhook) throw new Error("SLACK_WEBHOOK is not set");
+digitalOceanSnapshot({ volume: "e7f8...", tokenFrom: "DIGITALOCEAN_TOKEN" })
+```
+
+DigitalOcean's managed databases have no endpoint that takes a snapshot on
+demand: their backups are automatic and the API only lists them. So what this
+snapshots is the block storage `volume` the data sits on, which for redkite's
+own postgres service is the disk under the container, or the `droplet` when the
+database is the whole machine. A volume snapshot of a running Postgres is crash
+consistent rather than clean, which Postgres is built to survive.
+
+The token is named rather than given: a config is committed and a token is not.
+Both plugins check what they can before the run starts, so a missing token or a
+config naming two databases fails while the host is still untouched.
+
+## Plugins
+
+A plugin is what a deployment opts into. It adds steps to the run, or teaches
+it to resolve a kind of secret, and **nothing it carries happens until the
+config lists it** in `plugins`. Redkite's own vault is one of these rather than
+something wired in behind them, so the rule has no exceptions to remember.
+
+```ts
+import { bitwarden, defineDeployment, digitalOceanSnapshot, rdsSnapshot } from "redkite";
 
 export default defineDeployment({
+  project: "acme",
+  plugins: [
+    bitwarden(),
+    rdsSnapshot({ instance: "acme-production", region: "eu-west-1" }),
+  ],
   // ...
-  steps: [...slack(webhook)],
 });
 ```
+
+`plan` prints what a deployment opted into and where each plugin's steps land,
+so what a run will do is readable without running it:
+
+```
+plugins
+  bitwarden                 0 steps  resolves bitwarden
+  rds-snapshot-acme-db      1 step
+
+pipeline (deploy)
+  setup                     redkite
+  build                     redkite
+  swap:before:snapshot-acme-db  rds-snapshot-acme-db
+  swap:before:migrate-backend
+  swap                      redkite
+  cleanup                   redkite
+```
+
+A plugin's steps run above the deployment's own, which is why the snapshot
+lands before the migration written under `steps`. Registering the same plugin
+twice is refused, and so is a second plugin claiming a provider another already
+resolves.
+
+The ones redkite ships are `bitwarden()`, [`rdsSnapshot()` and
+`digitalOceanSnapshot()`](#snapshotting-a-database-before-a-swap). None of them
+is on unless you say so.
+
+### Writing plugins
+
+A plugin is an object with a name, and steps or stores. `definePlugin` is
+identity, but it checks the points where the plugin is written rather than
+where it is registered, so a typo is the plugin's own failure:
+
+```ts
+import { definePlugin, defineStep, type Plugin } from "redkite";
+
+export function announce(options: { url: string }): Plugin {
+  return definePlugin({
+    name: "announce",
+    steps: [
+      defineStep("swap:after:announce", async (input, context) => {
+        if (!input.ok) return input;
+
+        context.task.detail(`announcing ${input.released.join(", ")}`);
+        await fetch(options.url, { method: "POST", body: input.released.join(",") });
+
+        return input;
+      }),
+    ],
+  });
+}
+```
+
+The input and output types come from the point: a step at `swap:after` is
+handed what the swap answered with, and must answer with the same, which is
+what makes `input.released` typed without annotating anything.
+
+A plugin resolving secrets registers a store per provider tag instead. It is
+opened once, and only when a ref actually names that provider:
+
+```ts
+definePlugin({
+  name: "onepassword",
+  stores: {
+    onepassword: async ({ detail }) => {
+      detail("unlocking");
+      return { read: async (id: string) => await read(id) };
+    },
+  },
+});
+```
+
+Then a ref pointing at it is `{ provider: "onepassword", id }`, which is what a
+helper like `bitwarden.item()` answers with.
+
+### As a separate package
+
+There is nothing to register: a package exports a function, a config imports it
+and lists what it answers with. The one thing to know is that **a plugin has to
+ship JavaScript**. Node strips types from a config file, but it refuses to do
+so for anything under `node_modules`, so a package shipping `.ts` fails to load
+with `Stripping types is currently unsupported for files under node_modules`.
+Compile it and ship `dist`, the way redkite itself does:
+
+```json
+{
+  "name": "redkite-plugin-announce",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": { "build": "tsc index.ts --outDir dist --declaration" },
+  "peerDependencies": { "redkite": ">=0.1.7" }
+}
+```
+
+`redkite` belongs in `peerDependencies` rather than `dependencies`: a plugin
+extends the redkite the deployment is already running, and a second copy of it
+would be a second set of types that do not match.
+
+```sh
+npm install redkite-plugin-announce
+```
+
+```ts
+import { announce } from "redkite-plugin-announce";
+
+plugins: [announce({ url: process.env.SLACK_WEBHOOK ?? "" })],
+```
+
+A complete one is in [examples/plugin](examples/plugin). Two things worth
+copying from it: take what the plugin needs as options rather than reading the
+environment at import time, and name the variable a token comes from rather
+than the token itself, so a config stays committable. Anything a plugin can
+check about its own configuration it should check when it is constructed, so a
+mistake is a config that fails to load rather than a deploy that stops with the
+swap ahead of it.
 
 ## Verifying a build
 
@@ -664,6 +870,8 @@ redkite <command> [environment]
   plan [environment]     Print the derived topology, the pipeline and the nginx
   deploy [environment]   Build, swap, health check, and revert on failure
   verify [environment]   Bring the services up, build, and run each app's checks
+  rollback [environment] Put back any app a run moved and did not finish
+  down [environment]     Stop everything this environment named
 
   --config <path>        Defaults to redkite.config.ts at the root of the project
   --local                Build the images here and ship them to the host
@@ -766,6 +974,86 @@ the CPU and disk it is using. Nothing will clean up after it but you.
 ```
 
 The sixth press leaves.
+
+## GitHub Actions
+
+There is a composite action in this repository. `verify` on a pull request,
+`deploy` on merge:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: JVKdouk/redkite@v1
+  with:
+    command: deploy
+    environment: production
+    ssh-key: ${{ secrets.DEPLOY_KEY }}
+  env:
+    BW_CLIENT_ID: ${{ secrets.BW_CLIENT_ID }}
+    BW_CLIENT_SECRET: ${{ secrets.BW_CLIENT_SECRET }}
+    BW_PASSWORD: ${{ secrets.BW_PASSWORD }}
+```
+
+Whole workflows are in [examples/actions](examples/actions). The action sets
+Node up, caches `~/.cache/redkite` so the pinned Bitwarden CLI is installed once
+rather than every run, loads the key into an agent for the job, and runs a
+pinned `redkite`.
+
+The view stands down on its own: it wants a terminal on both stdout and stdin,
+and a runner has neither, so what a job logs is one line per event.
+
+A runner's `known_hosts` is empty every time, so the default `accept-new`
+trusts the deploy host on first sight each run. `hostKeys: "strict"` there means
+writing the key into `~/.ssh/known_hosts` before the deploy step.
+
+**The key is only needed where something uses it.** A run that reaches a deploy
+host, or clones over ssh, wants an agent holding one. A `verify` that builds
+what the checkout already holds wants nothing: no host to reach, no clone. That
+is what makes a pull request from a fork's branch testable without handing the
+job a deploy key.
+
+**Build on the host, not on the runner.** The obvious move is to point an app at
+the checkout the job already has, and it is usually the wrong one: a runner is
+thrown away, so BuildKit starts cold every time and the finished image has to be
+shipped over ssh. An app that names a `repo` is cloned by the deploy host into a
+mirror that is already warm, and nothing crosses the wire. Keep `path` for
+`verify`, where the point is to test the tree in the pull request including what
+was never pushed.
+
+**Two runs would race.** Redkite holds no lock, so give the deploy job a
+`concurrency` group. Leave `cancel-in-progress` false on that one: a deploy
+interrupted between retiring the old container and starting the new one is the
+one state nothing downstream can reason about.
+
+### Cancelling a run
+
+A run that is **asked** to stop puts back whatever it moved. Everything from
+retiring the old container to the health check is one guarded stretch, and an
+abort anywhere in it reverts the apps that had already moved, on a connection
+the stop cannot refuse.
+
+A run that is **killed** never gets that far, which is what a cancelled job is:
+SIGINT, then the job is torn down after a grace period. So the recovery has to
+be something a different process can do, reading what the host is in rather
+than what the dead run remembered. A retired container is the whole signal, and
+that is what `rollback` looks for:
+
+```yaml
+- if: cancelled()
+  uses: JVKdouk/redkite@v1
+  with:
+    command: rollback
+    environment: production
+    ssh-key: ${{ secrets.DEPLOY_KEY }}
+```
+
+It does nothing when nothing was interrupted, so it is safe to leave in the
+workflow. `down` is its counterpart for an environment that exists to be built
+against rather than served from: it stops that environment's containers, the
+derived proxy included, and stops rather than removes them so the next run
+adopts them where it left off.
+
+The build itself is still the one thing a killed job cannot take back with it:
+it keeps going on the deploy host. Nothing inside the job can change that.
 
 ## How a deploy runs
 

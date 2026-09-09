@@ -5,12 +5,16 @@ import {
   nextApp,
   nodeApp,
   redis,
-  sentry,
 } from "../../src/index.js";
 
 export default defineDeployment({
   project: "acme",
   maxBodySize: "1024M",
+
+  // Nothing a plugin brings happens until it is listed here, the vault
+  // included: without this the refs below resolve to nothing and the deploy
+  // says so before it builds
+  plugins: [bitwarden()],
 
   // The environments are the files beside this one, one each. Selecting one on
   // the command line threads its name into every container, network, volume and
@@ -38,7 +42,7 @@ export default defineDeployment({
       repo: "git@github.com:acme/frontend.git",
       route: "/",
       port: 3000,
-      secrets: bitwarden("00000000-0000-4000-8000-000000000001"),
+      secrets: bitwarden.item("00000000-0000-4000-8000-000000000001"),
       build: nextApp({ builder: "24-alpine", runtime: "22-alpine" }),
       health: { path: "/api/health", expect: (body) => body.status === "ok" },
     },
@@ -48,11 +52,11 @@ export default defineDeployment({
       route: "/api/",
       port: 3001,
       // An array merges in order, so a shared ref could sit ahead of this one
-      secrets: bitwarden("00000000-0000-4000-8000-000000000002"),
+      secrets: bitwarden.item("00000000-0000-4000-8000-000000000002"),
       volumes: { logs: "/app/logs" },
       environment: { PM2_HOME: "/app/logs/pm2" },
       files: {
-        "/app/service-account.json": bitwarden("00000000-0000-4000-8000-000000000003"),
+        "/app/service-account.json": bitwarden.item("00000000-0000-4000-8000-000000000003"),
       },
 
       build: nodeApp({
@@ -69,7 +73,6 @@ export default defineDeployment({
         output: "/app/dist",
         carry: ["/app/.generated"],
         entrypoint: ["node", "/app/core/index.mjs"],
-        sourcemaps: sentry({ stripFromImage: "SENTRY_AUTH_TOKEN" }),
       }),
 
       health: {

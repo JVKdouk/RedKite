@@ -118,7 +118,7 @@ describe("deploy", () => {
       `network connect --ip ${back.retiredAddress} ${topology.network} ${back.container}`,
       `container rename ${back.container} ${back.retired}`,
       // Only then does the name and the live address belong to the new one
-      `container create --name ${back.container} --hostname ${back.container} -v ${back.volumes[0]!.volume}:/app/logs --network ${topology.network} --add-host ${front.container}:${front.currentAddress} --add-host ${front.retired}:${front.retiredAddress} --add-host redis:${topology.services[0]!.address} -e PM2_HOME=/app/logs/pm2 --ip ${back.currentAddress} --restart unless-stopped ${back.container}`,
+      `container create --name ${back.container} --hostname ${back.container} -v ${back.volumes[0]!.volume}:/app/logs --network ${topology.network} --add-host ${front.container}:${front.currentAddress} --add-host ${front.retired}:${front.retiredAddress} --add-host redis:${topology.services[0]!.address} --env-file /tmp/redkite/apps/backend/env -e PM2_HOME=/app/logs/pm2 --ip ${back.currentAddress} --restart unless-stopped ${back.container}`,
       `container start ${back.container}`,
     ]);
   });
@@ -139,8 +139,20 @@ describe("deploy", () => {
     const { host } = await run({ existing: [back.container] });
     const migration = host.commands.find((c) => c.includes("yarn db:migrate"))!;
 
-    assert.match(migration, /^run --rm --network host --workdir \/app /);
+    assert.match(migration, /^run --rm --network host --env-file \S+ --workdir \/app /);
     assert.match(migration, new RegExp(`${back.container}-builder:`));
+  });
+
+  // Nothing from the vault is in the image any more, so a migration that was
+  // not handed one would run with no database url at all
+  it("hands the migration the environment the image no longer carries", async () => {
+    const { host } = await run({ existing: [back.container] });
+    const migration = host.commands.find((c) => c.includes("yarn db:migrate"))!;
+
+    assert.match(migration, /--env-file \/tmp\/redkite\/apps\/backend\/env/);
+
+    const written = host.files.get("apps/backend/env");
+    assert.equal(written, "DATABASE_URL=postgres://user:pw@db.internal:5432/app\n");
   });
 
   // A database this deployment runs is on the deployment network under an
@@ -225,6 +237,25 @@ describe("deploy", () => {
     };
 
     await refuses(missing, /ghost names no app/);
+  });
+
+  // A first deploy has nothing behind it. Reverting used to reach for a
+  // container that never existed and fail with "it does not exist", which
+  // turned an unhealthy first release into a crash with no verdict
+  it("reverts a first deploy that never came up, without a container to put back", async () => {
+    const { result, host } = await run({
+      bodies: { ...HEALTHY, [back.container]: '{"status":"down"}' },
+    });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.reverted.sort(), [back.container, front.container].sort());
+
+    // Parked under its own name. The swap starts it once to probe it, and the
+    // revert must not reach for it again once the name has moved
+    assert.ok(host.commands.includes(`container rename ${back.container} ${back.failed}`));
+
+    const started = host.commands.filter((c) => c === `container start ${back.container}`);
+    assert.equal(started.length, 1);
   });
 
   it("reverts every app when one of them is unhealthy", async () => {
@@ -377,7 +408,7 @@ describe("deploy", () => {
 describe("a service with secrets", () => {
   const withPostgres: Deployment = {
     ...config,
-    services: [...config.services, postgres({ secrets: bitwarden("pg"), environment: { POSTGRES_DB: "acme" } })],
+    services: [...config.services, postgres({ secrets: bitwarden.item("pg"), environment: { POSTGRES_DB: "acme" } })],
   };
 
   async function run() {

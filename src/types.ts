@@ -1,4 +1,5 @@
 import type { AnyStep } from "./pipeline.js";
+import type { Plugin } from "./plugin.js";
 
 // The shapes a deploy config is written against. Nothing here knows about
 // Docker or git, so a config can be planned and asserted on without a host to
@@ -33,11 +34,26 @@ export type Environment = {
 // the alias the apps know it by
 export type StepNetwork = "host" | "deployment" | "none" | { named: string };
 
+// How the deploy host proves it is the machine it says it is, before a key,
+// an environment file or an image is handed to it
+export type HostKeys =
+  // Trusted the first time and refused if the key ever changes after that,
+  // which is what a host on a stable address wants and needs no setup
+  | "accept-new"
+  // Refused unless it is already in known_hosts. Nothing is taken on trust,
+  // at the cost of putting the key there before the first deploy
+  | "strict"
+  // Checked not at all. For a host whose address is handed out again and
+  // again, and only where nothing on the way to it can be listened to
+  | "off";
+
 export type DeployHost = {
   // SSH destination, user@address
   bastion: string;
   // Socket path on that machine. Local when absent, deploying to this one
   socket?: string;
+  // Defaults to accept-new
+  hostKeys?: HostKeys;
 };
 
 // One item in a store, named at the point of use rather than through a lookup
@@ -127,16 +143,6 @@ export type BuildSpec = {
   // Shell commands run in the runtime image, for what a package manager cannot
   // install. Above the output copy, so a new commit does not repeat them
   runtimeSteps: string[];
-  // Uploads source maps during the build, then deletes them from the image
-  sourcemaps?: SourcemapSpec;
-};
-
-export type SourcemapSpec = {
-  // Which service receives the maps, "sentry" is the only one today
-  provider: "sentry";
-  // Env var stripped from the shipped file, it is a build-time credential and
-  // has no reason to travel inside the image
-  stripFromImage: string;
 };
 
 // How a build is decided to work. The commands run in the builder image, which
@@ -237,7 +243,11 @@ export type Deployment = {
   // The applications. Everything derived, addresses, container names, nginx
   // upstreams and location blocks, is a function of this list
   apps: AppSpec[];
-  // Work injected into the run, from this file or from a plugin that answers
-  // with some. Addressed by where it runs, so nothing here has to be called
+  // Work injected into the run. Addressed by where it runs, so nothing here
+  // has to be called
   steps?: AnyStep[];
+  // Everything this deployment opts into: the vault that answers its secret
+  // refs, and whatever else brings steps of its own. Nothing a plugin carries
+  // happens until it is listed here, redkite's own vault included
+  plugins?: Plugin[];
 };

@@ -1,0 +1,49 @@
+# Build, swap, health check, and revert on failure. Runs on merge.
+#
+# Copy this to .github/workflows/deploy.yml in the repository being deployed.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+# Redkite holds no lock, so two runs would move the same containers past each
+# other. cancel-in-progress stays false on purpose: a deploy interrupted
+# between retiring the old container and starting the new one is the one state
+# nothing downstream can reason about
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Only for the deployment file. The apps name repositories, and the
+      # deploy host clones those itself against a cache that is already warm,
+      # which is faster than anything this runner can ship it
+      - uses: actions/checkout@v4
+
+      - uses: JVKdouk/redkite@v1
+        with:
+          command: deploy
+          environment: production
+          # Reaches the deploy host, and is forwarded so that host can clone
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+        env:
+          BW_CLIENT_ID: ${{ secrets.BW_CLIENT_ID }}
+          BW_CLIENT_SECRET: ${{ secrets.BW_CLIENT_SECRET }}
+          BW_PASSWORD: ${{ secrets.BW_PASSWORD }}
+
+      # A cancelled job is killed rather than asked, so the run that was moving
+      # addresses never gets to put them back itself. This reads what the host
+      # is in rather than what that run remembered, and does nothing when there
+      # is nothing to undo
+      - if: cancelled()
+        uses: JVKdouk/redkite@v1
+        with:
+          command: rollback
+          environment: production
+          ssh-key: ${{ secrets.DEPLOY_KEY }}

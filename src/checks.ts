@@ -1,3 +1,4 @@
+import { envFlags } from "./environment.js";
 import { appRoot } from "./layout.js";
 import type { Built, Context, Plan, Released } from "./pipeline.js";
 import { quote } from "./shell.js";
@@ -31,6 +32,9 @@ async function checkApp(app: AppSpec, spec: VerifySpec, input: Built, context: C
   const flags = [
     "run --rm",
     ...attachment(spec.network ?? "deployment", context.topology),
+    // Before the named settings, so a check can override what the vault says
+    // without editing the vault
+    ...(await envFlags(app, context)),
     `--workdir ${appRoot(app.dir)}`,
     ...settings({ ...app.environment, ...spec.environment }),
     builderOf(input, app.name),

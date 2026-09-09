@@ -158,6 +158,7 @@ export function fakeHost(
       write,
       pipe,
       stop: async () => 0,
+      final: sh,
       directory: "/tmp/redkite",
       cache: "/cache/redkite",
     } satisfies Host,

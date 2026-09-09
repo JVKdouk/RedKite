@@ -82,22 +82,18 @@ function builderStage(spec: BuildSpec, context: DockerfileContext) {
   // Only now, so the steps below read the app's own manifest and write beside it
   if (context.dir) lines.push(`WORKDIR ${workdir}`);
 
-  lines.push(
-    `RUN --mount=type=secret,id=${context.envSecret} cp /run/secrets/${context.envSecret} ${workdir}/.env`,
-    `ENV SENTRY_RELEASE=${context.release}`,
-  );
+  lines.push(`ENV SENTRY_RELEASE=${context.release}`);
+
+  // Mounted for the length of each step rather than copied into the tree. A
+  // file that is copied is in that layer for good, and no later instruction
+  // can take it back out: rm leaves it readable in the layer underneath
+  const env = `--mount=type=secret,id=${context.envSecret},target=${workdir}/.env `;
 
   // Unquoted: the shell form hands everything after RUN to sh -c, so a step is
   // written exactly as it would be typed. Quoting it made the whole command one
   // word, and the shell went looking for a program by that name
   for (const step of spec.steps) {
-    lines.push(`RUN ${mounts}${step}`);
-  }
-
-  if (spec.sourcemaps) {
-    // The built .env ships inside the image, and an upload token is build-time
-    const token = spec.sourcemaps.stripFromImage;
-    lines.push(`RUN sed -i '/^${token}=/d' ${rootedAt(spec.output, context.dir)}/.env`);
+    lines.push(`RUN ${env}${mounts}${step}`);
   }
 
   return lines;

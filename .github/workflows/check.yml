@@ -1,0 +1,29 @@
+name: check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The type-level assertions are part of the suite, so this is not a lint
+      - run: npm run check
+
+      - run: npm test
+
+      # A publish cannot go out with an unfilled licence, and this says so here
+      # rather than at the point somebody is trying to release
+      - run: node scripts/verifyRelease.mjs

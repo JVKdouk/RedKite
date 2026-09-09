@@ -16,12 +16,11 @@ import type { SecretStore } from "./refs.js";
 
 const run = promisify(execFile);
 
+// A session the caller already holds, or what it takes to obtain one. Both
+// spellings in one object would be a pair of credentials nobody can tell apart
 export type BitwardenCredentials = {
-  clientId: string;
-  clientSecret: string;
-  password: string;
   detail?: (message: string) => void;
-};
+} & ({ session: string } | { clientId: string; clientSecret: string; password: string });
 
 // Used when bw is not already on PATH. Pinned, because an unpinned CLI is a
 // different program on a machine that has never run a deploy before
@@ -53,22 +52,7 @@ export async function bitwardenStore(
       maxBuffer: 32 * 1024 * 1024,
     });
 
-  detail("unlocking the vault");
-
-  // Already logged in is not an error, the session is what matters
-  await bw(["login", "--apikey"], {
-    BW_CLIENTID: credentials.clientId,
-    BW_CLIENTSECRET: credentials.clientSecret,
-  }).catch(() => undefined);
-
-  const unlocked = await bw(["unlock", "--passwordenv", "BW_PASSWORD", "--raw"], {
-    BW_PASSWORD: credentials.password,
-  }).catch((error: unknown) => {
-    throw new Error(`Could not unlock the Bitwarden vault: ${messageOf(error)}`);
-  });
-
-  const session = unlocked.stdout.trim();
-  if (!session) throw new Error("Bitwarden unlocked without a session");
+  const session = await unlock(bw, credentials, detail);
 
   // An item added since the last deploy is not in the local vault otherwise,
   // and bw get answers "not found" rather than fetching it
@@ -95,6 +79,41 @@ export async function bitwardenStore(
       return await pending;
     },
   };
+}
+
+type Bw = (args: string[], env?: Record<string, string>) => Promise<{ stdout: string }>;
+
+// A session handed in is one nobody had to obtain, which is the whole of what
+// a key in the environment buys: no api credentials, no master password, and
+// two fewer round trips before the first item is read
+async function unlock(
+  bw: Bw,
+  credentials: BitwardenCredentials,
+  detail: (message: string) => void,
+) {
+  if ("session" in credentials) {
+    detail("using the session it was given");
+    return credentials.session;
+  }
+
+  detail("unlocking the vault");
+
+  // Already logged in is not an error, the session is what matters
+  await bw(["login", "--apikey"], {
+    BW_CLIENTID: credentials.clientId,
+    BW_CLIENTSECRET: credentials.clientSecret,
+  }).catch(() => undefined);
+
+  const unlocked = await bw(["unlock", "--passwordenv", "BW_PASSWORD", "--raw"], {
+    BW_PASSWORD: credentials.password,
+  }).catch((error: unknown) => {
+    throw new Error(`Could not unlock the Bitwarden vault: ${messageOf(error)}`);
+  });
+
+  const session = unlocked.stdout.trim();
+  if (session) return session;
+
+  throw new Error("Bitwarden unlocked without a session");
 }
 
 type Cli = { file: string; prefix: string[] };

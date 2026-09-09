@@ -2,8 +2,9 @@ import { build, type BuildContext, type BuildResult } from "./build.js";
 import { assertCheckable, runChecks } from "./checks.js";
 import { environmentOf } from "./config.js";
 import { Docker } from "./docker.js";
+import { envFileFor } from "./environment.js";
 import { healthcheck, type HealthDeps } from "./health.js";
-import type { Host } from "./host.js";
+import { finalHost, type Host } from "./host.js";
 import { localHost } from "./localHost.js";
 import { silent, type Log } from "./log.js";
 import {
@@ -21,6 +22,7 @@ import {
   type Run,
   type Start,
 } from "./pipeline.js";
+import { pluginSteps } from "./plugin.js";
 import { readEnv, readRef, type SecretStores } from "./secrets/refs.js";
 import { ensureService } from "./services/ensure.js";
 import { plannedServices } from "./services/planned.js";
@@ -78,8 +80,11 @@ async function start(run: Run, options: DeployOptions): Promise<Finished> {
     run,
   };
 
-  const steps = merge(supplied(options), options.config.steps ?? []);
-  return await runPipeline(run, steps, setting, options.signal);
+  // A plugin's steps lead, so a snapshot listed as a plugin runs above the
+  // migration the deployment writes after it
+  const added = [...pluginSteps(options.config.plugins), ...(options.config.steps ?? [])];
+
+  return await runPipeline(run, merge(supplied(options), added), setting, options.signal);
 }
 
 // Every step redkite supplies, in the order the phases name. A run walks the
@@ -171,33 +176,66 @@ async function release(
     context.config.apps.map((app) => [app.name, app.environment ?? {}]),
   );
 
-  task.detail("retiring the running containers");
-  await Promise.all(apps.map((app) => retire(docker, topology, app)));
-
-  task.detail("creating the new ones");
-
-  await Promise.all(
-    apps.map((app) =>
-      create(docker, topology, app, environments.get(app.name)),
+  // Resolved now and handed over when the container is made. Nothing from the
+  // vault is in the image, so this is the only way the running process sees it
+  const files = new Map(
+    await Promise.all(
+      context.config.apps.map(
+        async (app) => [app.name, await envFileFor(app, context)] as const,
+      ),
     ),
   );
 
-  task.detail("starting them");
-  await Promise.all(apps.map((app) => docker.container.start(app.container)));
+  // What has actually been moved, rather than what was going to be. A stop
+  // lands between two docker commands, and only this says which side of it
+  const moved: AppTopology[] = [];
 
-  // One unhealthy app reverts all of them. A half-swapped deployment is the
-  // one state nothing downstream knows how to reason about
-  if (!(await checkAll(context, health))) {
-    context.log.fail("Health checks failed, reverting");
-    await Promise.all(apps.map((app) => revert(docker, topology, app)));
+  try {
+    task.detail("retiring the running containers");
 
-    return {
-      ...input,
-      ok: false,
-      released: [],
-      reverted: apps.map((app) => app.container),
-      checked: [],
-    };
+    await Promise.all(
+      apps.map(async (app) => {
+        await retire(docker, topology, app);
+        moved.push(app);
+      }),
+    );
+
+    task.detail("creating the new ones");
+
+    await Promise.all(
+      apps.map((app) =>
+        create(docker, topology, app, environments.get(app.name), files.get(app.name)),
+      ),
+    );
+
+    task.detail("starting them");
+    await Promise.all(apps.map((app) => docker.container.start(app.container)));
+
+    // Inside, because the swap is not over until this says so. A stop lands
+    // here more often than anywhere else: it is the longest part, and by now
+    // every address has already moved
+    if (!(await checkAll(context, health))) {
+      context.log.fail("Health checks failed, reverting");
+      await Promise.all(apps.map((app) => revert(docker, topology, app)));
+
+      return {
+        ...input,
+        ok: false,
+        released: [],
+        reverted: apps.map((app) => app.container),
+        checked: [],
+      };
+    }
+  } catch (error) {
+    // Whatever ended this, the addresses have moved and something has to put
+    // them back. A stop is the usual one, so the revert runs on a host that
+    // has been told to stop: it is the abort that made this necessary
+    if (moved.length > 0) {
+      context.log.fail(`Putting ${moved.length} back where they were`);
+      await putBack(context, moved);
+    }
+
+    throw error;
   }
 
   return {
@@ -207,6 +245,23 @@ async function release(
     reverted: [],
     checked: [],
   };
+}
+
+// Through a host with the stop lifted, because the commands that undo a swap
+// cannot be refused by the same signal that interrupted it. One app failing to
+// go back must not stop the others, so each is settled on its own
+async function putBack(context: Context, moved: AppTopology[]) {
+  const docker = new Docker(finalHost(context.host));
+
+  const put = moved.map(async (app) => {
+    try {
+      await revert(docker, context.topology, app);
+    } catch (error) {
+      context.log.fail(`${app.container} could not be put back: ${String(error)}`);
+    }
+  });
+
+  await Promise.all(put);
 }
 
 // A build leaves its image on the host rather than sending one, so without this
@@ -342,6 +397,7 @@ async function create(
   topology: Topology,
   app: AppTopology,
   environment: Record<string, string> = {},
+  envFile?: string,
 ) {
   const builder = docker.container
     .builder()
@@ -357,19 +413,35 @@ async function create(
     builder.extraHost(host, ip);
   }
 
+  if (envFile) builder.envFile(envFile);
+
   for (const volume of app.volumes) builder.volume(volume.volume, volume.mountPath);
   for (const [name, value] of Object.entries(environment)) builder.env(name, value);
 
   await builder.create();
 }
 
-// Put the retired container back on the live address and its original name
-async function revert(docker: Docker, topology: Topology, app: AppTopology) {
+// Put the retired container back on the live address and its original name.
+// Answers with whether there was one: a first deploy has nothing behind it, and
+// the container that just failed is simply left where it was renamed to
+export async function revert(docker: Docker, topology: Topology, app: AppTopology) {
   await docker.container.stop(app.container);
+
+  // The slot may still hold what an earlier interrupted run put there, and a
+  // rename refuses rather than clobbers. Retiring clears its own slot the same
+  // way, and a revert that skipped this would leave the new container live
+  await docker.container.stop(app.failed);
+  await docker.container.remove(app.failed);
+
   await docker.container.rename(app.container, app.failed);
+
+  if (!(await docker.container.exists(app.retired))) return false;
+
   await docker.network.reconnect(topology.network, app.retired, app.currentAddress);
   await docker.container.rename(app.retired, app.container);
   await docker.container.start(app.container);
+
+  return true;
 }
 
 async function cleanup(docker: Docker, app: AppTopology) {

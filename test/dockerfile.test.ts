@@ -114,8 +114,29 @@ describe("the rendered Dockerfile", () => {
     assert.match(file, /CMD \["node","\/app\/core\/index\.mjs"\]/);
   });
 
-  it("strips the upload token from the shipped environment file", () => {
-    assert.match(render("backend"), /sed -i '\/\^SENTRY_AUTH_TOKEN=\/d'/);
+  // A file copied into a layer is in that layer for good: rm leaves it
+  // readable underneath, so the only safe answer is never to copy it. The
+  // files an app names are the exception, and the point is that they are named
+  it("never puts the environment into a layer", () => {
+    const rendered = render("backend");
+
+    assert.ok(!rendered.includes("cp /run/secrets/backend-env"), rendered);
+    assert.ok(!/COPY[^\n]*\.env/.test(rendered), rendered);
+    assert.ok(!rendered.includes("rm -f /app/.env"), "removing it is not the same as not adding it");
+  });
+
+  // Present for the length of the step and gone after it, which is what lets a
+  // build read a credential without shipping one
+  it("mounts the environment onto each build step", () => {
+    const steps = render("backend")
+      .split("\n")
+      .filter((line) => line.startsWith("RUN ") && line.includes("yarn build"));
+
+    assert.ok(steps.length > 0);
+
+    for (const step of steps) {
+      assert.match(step, /--mount=type=secret,id=backend-env,target=\/app\/\.env /);
+    }
   });
 
   // What apk cannot install: a global npm package, a directory a package does
@@ -214,9 +235,9 @@ describe("an app in a directory of its own", () => {
     assert.match(file, /FROM node:22-alpine\nWORKDIR \/app\n/);
   });
 
-  it("writes the environment file where the app will read it", () => {
-    assert.ok(rendered("apps/web").includes("/run/secrets/frontend-env /app/apps/web/.env"));
-    assert.ok(rendered().includes("/run/secrets/frontend-env /app/.env"));
+  it("mounts the environment where the app will read it", () => {
+    assert.ok(rendered("apps/web").includes("target=/app/apps/web/.env"));
+    assert.ok(rendered().includes("target=/app/.env"));
   });
 
   it("changes nothing when the app is the repository", () => {

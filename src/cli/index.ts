@@ -7,13 +7,14 @@ import { silent, type Log } from "../log.js";
 import { renderNginx } from "../nginx.js";
 import { addressOf, RUNS, SLOTS, type Run } from "../pipeline.js";
 import { listRefs, type SecretStores } from "../secrets/refs.js";
-import { bitwardenStore } from "../secrets/store.js";
+import { pluginSteps, storeFor } from "../plugin.js";
+import { down, rollback } from "../recover.js";
 import { driftOf, plannedServices, type Drift } from "../services/planned.js";
 import { sshHost } from "../sshHost.js";
 import { topologyFor, type Topology } from "../topology.js";
 import type { Deployment, DeployHost } from "../types.js";
 
-import { requireAgent } from "./agent.js";
+import { needsAgent, requireAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { createLog, describeFailure } from "./log.js";
 
@@ -25,6 +26,8 @@ const USAGE = `redkite <command> [environment]
   plan [environment]     Print the derived topology, the pipeline and the nginx
   deploy [environment]   Build, swap, health check, and revert on failure
   verify [environment]   Bring the services up, build, and run each app's checks
+  rollback [environment] Put back any app a run moved and did not finish
+  down [environment]     Stop everything this environment named
 
   --config <path>        Defaults to redkite.config.ts at the root of the project
   --local                Build the images here and ship them to the host
@@ -46,6 +49,7 @@ function measured(host: Host, log?: Log) {
     cache: host.cache,
     pipe: host.pipe.bind(host),
     stop: host.stop.bind(host),
+    final: host.final.bind(host),
 
     sh: async (command, onLine) => {
       const started = Date.now();
@@ -143,6 +147,9 @@ async function dispatch(argv: string[]) {
   const configPath = flag(argv, "--config");
 
   if (command === "plan") return await plan(environment, configPath);
+  if (command === "rollback" || command === "down") {
+    return await recover(command, environment, configPath);
+  }
   if (command === "deploy" || command === "verify") {
     return await run(command, environment, configPath, {
       verbose: argv.includes("--verbose"),
@@ -153,6 +160,49 @@ async function dispatch(argv: string[]) {
 
   process.stdout.write(USAGE);
   process.exitCode = command ? 1 : 0;
+}
+
+// Neither runs a pipeline. Both exist for the run that was killed rather than
+// asked to stop, so they read what the host is in rather than what a deploy
+// remembered, and both are safe where there is nothing to do
+async function recover(
+  command: "rollback" | "down",
+  environment: string,
+  configPath?: string,
+) {
+  const config = await loadConfig(configPath);
+  const topology = topologyFor(config, environment);
+  const deployHost = environmentOf(config, environment)?.host;
+
+  const say = (message = "") => process.stdout.write(`${message}\n`);
+  if (needsAgent(config, environment)) requireAgent(say);
+
+  const host = await hostFor(deployHost, silent);
+
+  try {
+    if (command === "down") {
+      const { stopped } = await down({ config, environment, host, log: asLog(say) });
+
+      say(stopped.length === 0 ? "Nothing was running" : `Stopped ${stopped.join(", ")}`);
+      return;
+    }
+
+    const { restored } = await rollback({ config, environment, host, log: asLog(say) });
+
+    if (restored.length === 0) {
+      return say(`Nothing to put back in ${topology.environment}`);
+    }
+
+    say(`Put back ${restored.join(", ")}`);
+  } finally {
+    await host.close?.();
+  }
+}
+
+// These print rather than draw: a recovery runs after the view has gone, and
+// often in a job that is already being torn down
+function asLog(say: (message: string) => void): Log {
+  return Object.assign(say, { warn: say, fail: say, done: say, step: () => silent.step("") });
 }
 
 async function plan(environment: string, configPath?: string) {
@@ -203,6 +253,7 @@ async function plan(environment: string, configPath?: string) {
   // run it supports. Nothing declares that: the missing port is what says it
   const serves = Boolean(topology.publicPort);
 
+  sayPlugins(config, say);
   sayPipeline(config, serves, say);
   await sayDrift(config, topology, serves ? "deploy" : "verify", say);
 
@@ -250,6 +301,29 @@ const DRIFT: Record<Drift["reason"], string> = {
   unrecognised: "not created by redkite, will be recreated",
 };
 
+// Everything this deployment opted into. A vault that is missing from here is
+// the reason its refs will not resolve, and that is worth seeing before a run
+function sayPlugins(config: Deployment, say: (message?: string) => void) {
+  const plugins = config.plugins ?? [];
+  if (plugins.length === 0) return;
+
+  say("\nplugins");
+
+  for (const plugin of plugins) {
+    const stores = Object.keys(plugin.stores ?? {});
+    const resolves = stores.length > 0 ? `  resolves ${stores.join(", ")}` : "";
+    const count = plugin.steps?.length ?? 0;
+
+    say(`  ${plugin.name}${gap(plugin.name.length)}${count} ${count === 1 ? "step" : "steps"}${resolves}`);
+  }
+}
+
+const COLUMN = 26;
+
+function gap(width: number) {
+  return " ".repeat(Math.max(2, COLUMN - width));
+}
+
 // What each run will actually do, in the order it will do it. A step is
 // addressed rather than called, so this is the only place a sequence is visible
 function sayPipeline(
@@ -257,8 +331,18 @@ function sayPipeline(
   serves: boolean,
   say: (message?: string) => void,
 ) {
-  const steps = config.steps ?? [];
+  // What the run will walk, which is the plugins' steps and then the
+  // deployment's own. A plan that showed only one of them would be a plan of a
+  // different deploy
+  const steps = [...pluginSteps(config.plugins), ...(config.steps ?? [])];
   const added = new Set(steps.map((step) => step.point));
+
+  // Says which plugin a step came from, because a point on its own does not
+  const from = new Map(
+    (config.plugins ?? []).flatMap((plugin) =>
+      (plugin.steps ?? []).map((step) => [step.point, plugin.name] as const),
+    ),
+  );
 
   const at = (phase: string, slot: string) =>
     steps.filter((step) => {
@@ -294,7 +378,12 @@ function sayPipeline(
           say(`  ${phase.padEnd(26)}${who}${what}`);
         }
 
-        for (const step of at(phase, slot)) say(`  ${step.point}`);
+        for (const step of at(phase, slot)) {
+          const owner = from.get(step.point);
+          if (!owner) say(`  ${step.point}`);
+          // A point long enough to fill the column still gets its two spaces
+          else say(`  ${step.point}${gap(step.point.length)}${owner}`);
+        }
       }
     }
   }
@@ -395,7 +484,7 @@ async function hostFor(host: DeployHost | undefined, log: Log, signal?: AbortSig
   const task = log.step(`Opening a connection to ${host.bastion}`);
 
   try {
-    const opened = await sshHost(host.bastion, { signal });
+    const opened = await sshHost(host.bastion, { signal, hostKeys: host.hostKeys });
     task.done();
     return opened;
   } catch (error) {
@@ -406,6 +495,9 @@ async function hostFor(host: DeployHost | undefined, log: Log, signal?: AbortSig
 
 // Only the stores the config actually names. A deployment that keeps its
 // environment somewhere else, or nowhere, needs no credentials to deploy
+// One store per provider a ref names, opened from the plugins the deployment
+// registered. Nothing is opened for a deployment that names no refs, and a ref
+// no plugin answers for is refused rather than reaching for a vault by name
 async function openStores(config: Deployment, log: Log): Promise<SecretStores> {
   // Services name refs too, and a deployment whose only secret is a database
   // password opened no store at all until this counted them
@@ -417,35 +509,30 @@ async function openStores(config: Deployment, log: Log): Promise<SecretStores> {
     ...config.services.flatMap((service) => listRefs(service.secrets)),
   ];
 
-  const providers = new Set(refs.map((ref) => ref.provider));
+  const opened: SecretStores = {};
 
-  if (!providers.has("bitwarden")) return {};
+  for (const provider of new Set(refs.map((ref) => ref.provider))) {
+    const open = storeFor(config.plugins, provider);
 
-  const vault = log.step("Reading the vault");
+    if (!open) {
+      throw new Error(
+        `Nothing resolves ${provider} secrets. Add the plugin that does to ` +
+          "the plugins this deployment registers",
+      );
+    }
 
-  try {
-    const bitwarden = await bitwardenStore({
-      detail: vault.detail,
-      clientId: required("BW_CLIENT_ID"),
-      clientSecret: required("BW_CLIENT_SECRET"),
-      password: required("BW_PASSWORD"),
-    });
+    const task = log.step(`Reading the ${provider} vault`);
 
-    vault.done();
-    return { bitwarden };
-  } catch (error) {
-    vault.fail("Could not read the vault");
-    throw error;
+    try {
+      opened[provider] = await open({ detail: task.detail });
+      task.done();
+    } catch (error) {
+      task.fail(`Could not read the ${provider} vault`);
+      throw error;
+    }
   }
-}
 
-function required(name: string) {
-  const value = process.env[name];
-  if (value) return value;
-
-  throw new Error(
-    `${name} is not set, and this deployment reads its environment from Bitwarden`,
-  );
+  return opened;
 }
 
 type RunOptions = { verbose: boolean; full: boolean; local: boolean };
@@ -465,7 +552,9 @@ async function run(
   // The host clones the repositories over this, so it has to exist before the
   // connection that forwards it is opened. Before the view too: ssh-add asks
   // for a passphrase on the terminal, and by then the view owns it
-  requireAgent((message) => process.stderr.write(`${message}\n`));
+  if (needsAgent(config, environment)) {
+    requireAgent((message) => process.stderr.write(`${message}\n`));
+  }
 
   // Whatever is in flight is killed, the pipeline unwinds through its own
   // failure path, and the finally below removes the scratch directory

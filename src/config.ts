@@ -1,4 +1,5 @@
 import { assertSteps } from "./pipeline.js";
+import { pluginSteps } from "./plugin.js";
 import type { Deployment, Environment } from "./types.js";
 
 // The one selected, from the one place worth looking. A deployment that carries
@@ -19,7 +20,10 @@ export function defineDeployment<const T extends Deployment & { environments?: n
   assertOneSource(config);
   assertRoutesResolvable(config);
   assertDirsRelative(config);
-  assertSteps(config.steps ?? []);
+  assertUniquePlugins(config);
+  // Together, because a plugin's step and the deployment's own share the same
+  // points and two of them at one point is the collision worth catching
+  assertSteps([...pluginSteps(config.plugins), ...(config.steps ?? [])]);
   return config;
 }
 
@@ -27,6 +31,20 @@ export function defineDeployment<const T extends Deployment & { environments?: n
 // type the same way defineDeployment does, so a missing subnet fails to compile
 export function defineEnvironment<const T extends Environment>(environment: T): T {
   return environment;
+}
+
+// Registering one twice is either a mistake or two configurations of the same
+// thing, and neither is something to pick a winner for
+function assertUniquePlugins(config: Deployment) {
+  const seen = new Set<string>();
+
+  for (const plugin of config.plugins ?? []) {
+    if (seen.has(plugin.name)) {
+      throw new Error(`The plugin ${plugin.name} is registered twice`);
+    }
+
+    seen.add(plugin.name);
+  }
 }
 
 // Cloned or already here, and the two are built differently enough that
