@@ -213,3 +213,68 @@ describe("environments package.json names", () => {
     );
   });
 });
+
+// A file that was meant to be an environment and is named slightly differently
+// should be read and refused rather than passed over as though it were absent
+describe("which files beside the deployment are environments", () => {
+  const env = (name: string) => `export default { branch: "${name}", subnet: "10.0.0", publicPort: 80 };\n`;
+
+  it("reads the shape the docs use", async () => {
+    const root = await project({ "redkite.staging.config.ts": env("staging") });
+
+    assert.deepEqual(Object.keys(await loadEnvironments(root)), ["staging"]);
+  });
+
+  it("reads one that leaves the config out of the name", async () => {
+    const root = await project({ "redkite.staging.ts": env("staging") });
+
+    assert.deepEqual(Object.keys(await loadEnvironments(root)), ["staging"]);
+  });
+
+  it("reads a hyphen or an underscore where the dot would be", async () => {
+    const dashed = await project({ "redkite-staging.ts": env("staging") });
+    const scored = await project({ "redkite_staging.config.ts": env("staging") });
+
+    assert.deepEqual(Object.keys(await loadEnvironments(dashed)), ["staging"]);
+    assert.deepEqual(Object.keys(await loadEnvironments(scored)), ["staging"]);
+  });
+
+  it("reads every module extension node can load", async () => {
+    const root = await project({ "redkite.staging.config.mts": env("staging") });
+
+    assert.deepEqual(Object.keys(await loadEnvironments(root)), ["staging"]);
+  });
+
+  // It is the deployment, not an environment called config
+  it("never reads the deployment itself as one", async () => {
+    const root = await project({
+      "redkite.config.ts": "export default {};\n",
+      "redkite.staging.config.ts": env("staging"),
+    });
+
+    assert.deepEqual(Object.keys(await loadEnvironments(root)), ["staging"]);
+  });
+
+  it("leaves alone what was never addressed to redkite", async () => {
+    const root = await project({ "vite.config.ts": "export default {};\n" });
+
+    assert.deepEqual(Object.keys(await loadEnvironments(root)), []);
+  });
+
+  // The name becomes part of an image tag, and a tag cannot hold a capital.
+  // Skipping it silently is what made the file look as though it was not there
+  it("refuses a name that cannot be one, rather than skipping it", async () => {
+    const root = await project({ "redkite.Staging.config.ts": env("staging") });
+
+    await assert.rejects(() => loadEnvironments(root), /cannot name one/);
+  });
+
+  it("still refuses one environment defined twice", async () => {
+    const root = await project({
+      "redkite.staging.config.ts": env("staging"),
+      "redkite.staging.ts": env("staging"),
+    });
+
+    await assert.rejects(() => loadEnvironments(root), /defined by both/);
+  });
+});

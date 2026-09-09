@@ -37,7 +37,7 @@ function recorder(answers: Record<string, string> = {}) {
 const request = {
   name: "acme-staging-backend",
   repo: "git@github.com:acme/backend.git",
-  branch: "staging",
+  ref: { kind: "branch" as const, name: "staging" },
   submodules: true,
 };
 
@@ -120,7 +120,7 @@ describe("a source already on this machine", () => {
   const local = {
     name: "acme-test-backend",
     path: "/home/jvck/work/backend",
-    branch: "staging",
+    ref: { kind: "branch" as const, name: "staging" },
     submodules: false,
   };
 
@@ -151,7 +151,7 @@ describe("a source already on this machine", () => {
     });
 
     await prepareSource(host, local);
-    assert.ok(!scripts.some((script) => script.includes(`refs/heads/${local.branch}`)));
+    assert.ok(!scripts.some((script) => script.includes(`refs/heads/${local.ref.name}`)));
   });
 
   // An edit that is never committed is a different release, or a deploy hands
@@ -229,6 +229,52 @@ describe("a source already on this machine", () => {
     await assert.rejects(
       () => prepareSource(host, { ...local, path: undefined }),
       /names neither a repo nor a path/,
+    );
+  });
+});
+
+// A branch is tracked and a tag or a commit is pinned, and which of the three
+// it is decides where git is asked to look. Guessing would make v1.2.3 either
+describe("what a clone is resolved against", () => {
+  const at = (ref: { kind: "branch" | "tag" | "commit"; name: string }) => ({
+    name: "acme-staging-backend",
+    repo: "git@github.com:acme/backend.git",
+    ref,
+    submodules: false,
+  });
+
+  const resolving = (scripts: string[]) =>
+    scripts.find((script) => script.includes("rev-parse")) ?? "";
+
+  it("looks under heads for a branch", async () => {
+    const { host, scripts } = recorder();
+    await prepareSource(host, at({ kind: "branch", name: "staging" }));
+
+    assert.match(resolving(scripts), /rev-parse 'refs\/heads\/staging'/);
+  });
+
+  // Peeled, so an annotated tag answers with the commit it points at rather
+  // than with the tag object, which is not something a checkout can use
+  it("looks under tags for a tag, and peels it", async () => {
+    const { host, scripts } = recorder();
+    await prepareSource(host, at({ kind: "tag", name: "v1.2.3" }));
+
+    assert.match(resolving(scripts), /rev-parse 'refs\/tags\/v1\.2\.3\^\{commit\}'/);
+  });
+
+  it("takes a commit as it is, and checks it is one", async () => {
+    const { host, scripts } = recorder();
+    await prepareSource(host, at({ kind: "commit", name: "9f2b4c1" }));
+
+    assert.match(resolving(scripts), /rev-parse '9f2b4c1\^\{commit\}'/);
+  });
+
+  it("says which kind was not there", async () => {
+    const { host } = recorder({ "rev-parse": "\n" });
+
+    await assert.rejects(
+      () => prepareSource(host, at({ kind: "tag", name: "v9" })),
+      /has no tag v9/,
     );
   });
 });

@@ -13,6 +13,12 @@ export type Source = {
   tree: string;
 };
 
+// What a clone is resolved against. A branch is tracked and a tag or a commit
+// is pinned, and which of the three it is decides where git is asked to look
+export type RefKind = "branch" | "tag" | "commit";
+
+export type Ref = { kind: RefKind; name: string };
+
 export type SourceRequest = {
   // Names the mirror and the checkout. Keyed per app and environment rather
   // than per repository, so two deploys never fetch into one directory at once
@@ -23,9 +29,17 @@ export type SourceRequest = {
   // What of a path goes into the build. Absent leaves it to the work tree's
   // own .gitignore, which is the only other thing that can say
   include?: string[];
-  branch: string;
+  ref: Ref;
   submodules: boolean;
   detail?: (message: string) => void;
+};
+
+// Where each kind lives. A tag is peeled, so an annotated one answers with the
+// commit it points at rather than with the tag object
+const REVISION: Record<RefKind, (name: string) => string> = {
+  branch: (name) => `refs/heads/${name}`,
+  tag: (name) => `refs/tags/${name}^{commit}`,
+  commit: (name) => `${name}^{commit}`,
 };
 
 // accept-new rather than no: a host key that changes is still worth refusing
@@ -110,8 +124,9 @@ async function clonedSource(
   const detail = request.detail ?? (() => {});
   const mirror = `${host.cache}/mirrors/${request.name}.git`;
   const path = `${host.cache}/source/${request.name}`;
+  const { kind, name } = request.ref;
 
-  detail(`fetching ${request.branch}`);
+  detail(`fetching ${name}`);
   await run(host, `updating the mirror of ${repo}`, [
     `if [ -d '${mirror}' ]; then`,
     `  git -C '${mirror}' remote set-url origin '${repo}'`,
@@ -122,13 +137,13 @@ async function clonedSource(
     "fi",
   ]);
 
-  const resolved = await run(host, `resolving ${request.branch}`, [
-    `git -C '${mirror}' rev-parse 'refs/heads/${request.branch}'`,
+  const resolved = await run(host, `resolving ${name}`, [
+    `git -C '${mirror}' rev-parse '${REVISION[kind](name)}'`,
   ]);
 
   const release = resolved.stdout.trim();
   if (!/^[0-9a-f]{40}$/.test(release)) {
-    throw new Error(`${repo} has no branch ${request.branch}`);
+    throw new Error(`${repo} has no ${kind} ${name}`);
   }
 
   detail(`checking out ${release.slice(0, 7)}`);

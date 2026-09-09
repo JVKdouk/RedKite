@@ -16,8 +16,16 @@ const EXTENSIONS = ["ts", "mts", "js", "mjs"] as const;
 
 const CANDIDATES = EXTENSIONS.map((extension) => `redkite.config.${extension}`);
 
-// redkite.<environment>.config.<extension>, beside the deployment it belongs to
-const PER_ENVIRONMENT = /^redkite\.([a-z0-9-]+)\.config\.(ts|mts|js|mjs)$/;
+// Anything beside the deployment that starts with redkite and is a module it
+// could read. The .config in the middle is what people write and what the docs
+// say, and it is optional here because a file that was meant to be an
+// environment and is named slightly differently should be read and refused
+// rather than passed over as though it were not there
+const PER_ENVIRONMENT = /^redkite[.\-_](.+?)(?:\.config)?\.(?:ts|mts|cts|js|mjs|cjs)$/;
+
+// What an environment may be called. It becomes part of an image tag, and an
+// image tag cannot hold a capital, so this is docker's limit rather than ours
+const ENVIRONMENT_NAME = /^[a-z0-9][a-z0-9._-]*$/;
 
 // Node strips types itself from 22.18 on, which is what lets redkite ship with
 // no dependencies. These are the ways that can fail on a config it cannot read.
@@ -121,8 +129,17 @@ export async function loadEnvironments(directory: string) {
   const seen: Record<string, string> = {};
 
   for (const entry of readdirSync(directory).sort()) {
+    if (CANDIDATES.includes(entry)) continue;
+
     const name = PER_ENVIRONMENT.exec(entry)?.[1];
     if (!name) continue;
+
+    if (!ENVIRONMENT_NAME.test(name)) {
+      throw new Error(
+        `${join(directory, entry)} reads as the environment ${name}, which cannot ` +
+          "name one: it becomes part of an image tag, and a tag is lower case",
+      );
+    }
 
     const first = seen[name];
     if (first) {

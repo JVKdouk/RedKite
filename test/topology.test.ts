@@ -216,6 +216,20 @@ describe("topology", () => {
     assert.throws(() => defineDeployment(empty), /includes nothing/);
   });
 
+  // A branch is tracked and a tag or a commit is pinned. Two of them named at
+  // once is two different commits, and picking one is not this file's to do
+  it("rejects an app naming more than one thing to build from", () => {
+    const both = (over: Record<string, string>) => ({
+      ...authored,
+      apps: authored.apps.map((app, index) => (index === 0 ? { ...app, ...over } : app)),
+    });
+
+    assert.throws(() => defineDeployment(both({ branch: "main", tag: "v1" })), /different commits/);
+    assert.throws(() => defineDeployment(both({ tag: "v1", commit: "abc" })), /different commits/);
+    assert.doesNotThrow(() => defineDeployment(both({ tag: "v1" })));
+    assert.doesNotThrow(() => defineDeployment(both({ branch: "main" })));
+  });
+
   it("rejects two apps on one route", () => {
     const clashing = {
       ...authored,

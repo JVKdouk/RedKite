@@ -149,7 +149,14 @@ export default defineEnvironment({
 });
 ```
 
-Redkite finds them by name, so there is no list to keep in step, and
+Redkite finds them by name, so there is no list to keep in step, and anything
+beside the deployment whose name starts with `redkite` and is a module counts:
+`redkite.staging.ts` and `redkite-staging.ts` name the same environment as
+`redkite.staging.config.ts` does. One that was meant to be an environment and
+is named slightly differently is refused rather than passed over as though it
+were not there. The name has to be lower case, because it becomes part of an
+image tag and a tag cannot hold a capital.
+
 `redkite.config.ts` has no `environments` key at all: a second place to put a
 set of them is a second place for them to disagree. A config that declares one
 does not compile.
@@ -254,6 +261,28 @@ sits beside the deployment is refused too: it comes from one place or the other.
 | `secrets` | One ref or several, merged in order, written to `.env` in the image |
 | `files` | Container path to the item whose contents land there |
 | `volumes` | Volume name to container path, for state that outlives a deploy |
+
+### What an app is built from
+
+Every cloned app takes the environment's `branch` unless it says otherwise. An
+app can name its own, and can pin instead of tracking:
+
+```ts
+{ name: "backend", repo: "…", branch: "release" }   // tracks that branch
+{ name: "worker",  repo: "…", tag: "v1.2.3" }       // pinned
+{ name: "legacy",  repo: "…", commit: "9f2b4c1" }   // pinned
+```
+
+At most one of the three, and a config naming two is refused: they are
+different commits and picking one is not redkite's to do.
+
+`branch` is looked up under `refs/heads`, `tag` under `refs/tags` and peeled,
+so an annotated tag answers with the commit it points at rather than with the
+tag object. A `commit` is taken as it is and checked that it is one. The
+failure says which kind was missing: *"acme/backend has no tag v9"*.
+
+An environment can only say `branch`. A tag or a commit is a claim about one
+repository, and an environment spans every app in the deployment.
 
 ### Building from a directory
 

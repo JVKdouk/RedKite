@@ -338,3 +338,30 @@ outright, the bundled example's backend included.
 fake ssh on PATH: accept-new by default, no when told off, yes when told strict.
 Cloning stays accept-new: that connection reaches GitHub rather than you, and
 making it strict would mean managing github.com's key on every deploy host.
+
+## What an app is built from, and which files are environments
+
+- [x] `AppSpec.branch`, `tag` and `commit`, at most one, overriding the
+      environment's branch. Two of them named at once is refused: they are
+      different commits and picking one is not redkite's to do
+- [x] A branch resolves under refs/heads, a tag under refs/tags and peeled, a
+      commit as it stands and checked that it is one. The failure says which
+      kind was missing rather than always saying "branch"
+- [x] An environment still says only `branch`: a tag is a claim about one
+      repository, and an environment spans every app
+- [x] Any file beside the deployment starting with redkite and loadable by node
+      is an environment. redkite.staging.ts, redkite-staging.ts and
+      redkite_staging.config.ts all read as staging
+- [x] A name that cannot be one is refused rather than skipped, which is what
+      made a file look as though it was not there. The deployment itself is
+      never read as an environment called config
+
+15 tests across discover, source and topology, each reverted to check it fails.
+Proved against a real bare repository with a tag two commits behind head: the
+branch built a7eb50a6d300 and both the tag and the pinned commit built
+dfc55e38768b, read off the image tags rather than the log.
+
+**Not the bug that was reported.** redkite.staging.config.ts in a directory
+package.json points at was already found; every shape that failed was a
+different spelling. If it is still not found, the file is somewhere the
+deployment is not, and nothing looks there.

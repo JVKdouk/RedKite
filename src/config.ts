@@ -65,6 +65,14 @@ function assertOneSource(config: Deployment) {
       throw new Error(`${app.name} says what to include, but is cloned rather than built from a path`);
     }
 
+    const refs = ["branch", "tag", "commit"].filter((kind) => app[kind as "branch"]);
+
+    if (refs.length > 1) {
+      throw new Error(
+        `${app.name} names ${refs.join(" and ")} to build from, and they are different commits`,
+      );
+    }
+
     if (app.include?.length === 0) {
       throw new Error(`${app.name} includes nothing, so there would be no build context`);
     }

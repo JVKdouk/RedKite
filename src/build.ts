@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import type { Docker } from "./docker.js";
 import { BUILDER_STAGE, renderDockerfile, renderDockerignore } from "./dockerfile.js";
+import type { Ref } from "./source.js";
 import type { Host } from "./host.js";
 import { prepareSource } from "./source.js";
 import type { AppTopology } from "./topology.js";
@@ -48,6 +49,16 @@ export type BuildResult = {
   cached: boolean;
 };
 
+// The app's own, or the environment's branch when it names none. A branch is
+// the only thing an environment can say, because a tag or a commit is a claim
+// about one repository and an environment spans every app
+export function refOf(app: AppSpec, branch: string): Ref {
+  if (app.tag) return { kind: "tag", name: app.tag };
+  if (app.commit) return { kind: "commit", name: app.commit };
+
+  return { kind: "branch", name: app.branch ?? branch };
+}
+
 export async function build(
   app: AppSpec,
   topology: AppTopology,
@@ -64,7 +75,7 @@ export async function build(
     // against the deployment file rather than wherever this was run
     path: app.path && resolve(app.path),
     include: app.include,
-    branch: context.branch,
+    ref: refOf(app, context.branch),
     submodules: spec.submodules,
     detail,
   });

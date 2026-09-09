@@ -199,6 +199,13 @@ export type AppSpec = {
   // Environment for the app. Several are merged in the order written, so a
   // shared ref can come first and a per-app one override it
   secrets?: SecretRefs;
+  // What this app is built from, overriding the environment's branch. At most
+  // one of the three. A branch is tracked, so every deploy takes whatever its
+  // head is by then; a tag or a commit is pinned, and the app stops moving
+  // until this line does. Ignored by an app built from a path
+  branch?: string;
+  tag?: string;
+  commit?: string;
   // Where the app sits in the repository, for a monorepo whose root is not it.
   // Build steps and the shipped command run there. The dependency install does
   // not: a workspace lockfile is resolved at the root for every package at once
