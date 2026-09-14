@@ -6,7 +6,15 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
 import config from "./deployment.js";
-import { bitwarden, bitwardenStore, listRefs, readEnv, readRef, storeFor } from "../src/index.js";
+import {
+  bitwarden,
+  bitwardenStore,
+  listRefs,
+  readEnv,
+  readRef,
+  storeFor,
+  withEnvironment,
+} from "../src/index.js";
 import type { SecretStores } from "../src/index.js";
 
 const stores: SecretStores = {
@@ -63,7 +71,9 @@ describe("secret refs", () => {
   // The id is a pointer rather than a credential, and the provider tag on it is
   // the whole of how a deploy knows which store to open
   it("carries every ref a deployment declares, with its provider", () => {
-    const backend = config.apps.find((app) => app.name === "backend")!;
+    const backend = withEnvironment(config, "production").apps.find(
+      (app) => app.name === "backend",
+    )!;
     const refs = [...listRefs(backend.secrets), ...Object.values(backend.files ?? {})];
 
     assert.ok(refs.length >= 2, "an environment and a credential file");

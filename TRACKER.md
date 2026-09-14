@@ -541,3 +541,67 @@ forward lost their reader without losing their place in the type.
 Probed both ways: dropping the check fails the refusal, and inverting it fails
 23, because the example config names its own bastion and every deploy test runs
 that migration.
+
+## Secrets that differ between environments
+
+- [x] `Environment.secrets` and `Environment.files`, keyed by app name. Which
+      item an app reads is usually the thing that differs, and an environment
+      file already holds the rest of what does
+- [x] `withEnvironment(config, name)` folds the selected environment into the
+      apps: its refs after the app's own, so the later key wins, and its files
+      over the app's by path
+- [x] What was folded in leaves the environment, so folding twice is folding
+      once. The CLI folds before it opens a connection or a vault, and the run
+      folds again when it starts, for anyone calling deploy() directly
+- [x] An app name the deployment does not have is refused, naming the apps it
+      does have. An environment file does not import the deployment, so a typo
+      there cannot fail to compile and would otherwise read nothing
+- [x] `plan` folds too, so it refuses the same mistake
+- [x] examples/acme: each environment file names its own items, production lays
+      its own service account over the shared one, and test reads a database
+      of its own
+- [x] examples/actions: `BW_KEY` from a GitHub environment per redkite
+      environment. They still passed password manager credentials, which the
+      default `bitwarden()` has not read since it moved to Secrets Manager
+- [x] README: the environment table and a section on it, the app table no
+      longer says secrets are written into the image, and the vault paragraph
+      describes the token rather than a session
+
+11 tests. Each reverted to check it fails: the environment read before the app,
+the app's files winning, unknown names accepted, a second fold appending again,
+an inline environment ignored, and the run not folding at all.
+
+## Steps that differ between environments
+
+- [x] `Environment.steps`. One at a point the deployment already fills replaces
+      it for that environment, where it stood: the rule redkite's own four
+      follow, one level down
+- [x] One only the environment has runs ahead of the deployment's, the way a
+      plugin's does
+- [x] Two at one point in one environment file are refused when the file is
+      defined. Replacing by point would otherwise keep the second and drop the
+      first without a word
+- [x] One landing on a point a plugin fills is refused, the collision
+      defineDeployment already refuses
+- [x] Folded by `withEnvironment` into `config.steps`, so the run, each step's
+      check and `plan`'s pipeline listing see it with nothing else changed
+- [x] `through` removed from `migrate()`. In a shared config it refused every
+      environment but one, which is what the acme example did to production. In
+      an environment file it would sit beside `host.bastion`, edited with it,
+      guarding nothing
+- [x] examples/acme: the shared migration in the deployment, production's own
+      in its file
+- [x] README: the environment table, a section on it, and the snapshot example,
+      which listed `rdsSnapshot` under `steps` although it is a plugin
+
+8 tests, the `through` refusal gone with the option. Reverted to check each
+fails: environment-only steps running after rather than ahead, no replacement,
+duplicates in an environment accepted, a plugin collision accepted, and
+defineEnvironment accepting duplicates.
+
+Folding twice is guarded twice over: the steps leave the environment, and a
+step already at its point replaces itself. The test for it fails only with both
+removed, and passes with either one taken out alone.
+
+Not done: turning a deployment's step off in one environment. Nothing needs it
+yet, because a verify run never reaches swap and so never migrates.

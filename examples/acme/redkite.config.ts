@@ -24,11 +24,8 @@ export default defineDeployment({
   // Hung before the swap, so it runs while the old containers still serve. A
   // failure here throws and nothing retires
   steps: [
-    migrate({
-      app: "backend",
-      command: "yarn db:migrate",
-      through: "deploy@staging.acme.example",
-    }),
+    // Every environment's, unless its own file puts a migration at this point
+    migrate({ app: "backend", command: "yarn db:migrate" }),
   ],
 
   services: [
@@ -43,7 +40,8 @@ export default defineDeployment({
       repo: "git@github.com:acme/frontend.git",
       route: "/",
       port: 3000,
-      secrets: bitwarden.item("00000000-0000-4000-8000-000000000001"),
+      // No secrets here: which item the frontend reads is what differs between
+      // environments, so each environment file names its own
       build: nextApp({ builder: "24-alpine", runtime: "22-alpine" }),
       health: { path: "/api/health", expect: (body) => body.status === "ok" },
     },
@@ -52,7 +50,8 @@ export default defineDeployment({
       repo: "git@github.com:acme/backend.git",
       route: "/api/",
       port: 3001,
-      // An array merges in order, so a shared ref could sit ahead of this one
+      // What every environment shares. Each environment file lays its own item
+      // over this one, and a key set in both takes the environment's value
       secrets: bitwarden.item("00000000-0000-4000-8000-000000000002"),
       volumes: { logs: "/app/logs" },
       environment: { PM2_HOME: "/app/logs/pm2" },

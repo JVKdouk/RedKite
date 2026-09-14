@@ -185,6 +185,9 @@ Selected on the command line and threaded into every derived name.
 | `host.bastion` | `user@address` of the deploy host. Absent means this machine |
 | `extraHosts` | Hostname to address, added to every container beside the derived ones |
 | `buildOn` | `"host"` by default. `"local"` compiles here and ships the image |
+| `secrets` | App name to the items this environment reads, after the app's own |
+| `files` | App name to container path to item, laid over the app's own files |
+| `steps` | Steps for this environment alone, replacing the deployment's at the same point |
 
 Images are built on the deploy host, which is where they are needed and costs
 nothing to move them. A host too small to compile on can be told otherwise:
@@ -203,6 +206,70 @@ since there would be nothing to move.
 `extraHosts` is for something the apps must resolve that redkite does not run:
 a managed database, a legacy service, anything whose address is the thing that
 differs between staging and production.
+
+#### Secrets that differ between environments
+
+Staging and production usually read the same variables from different items. The
+item is named in the environment's file, beside everything else that differs,
+keyed by the app it belongs to:
+
+```ts
+// redkite.production.config.ts
+export default defineEnvironment({
+  branch: "main",
+  subnet: "10.20.0",
+  publicPort: 80,
+  host: { bastion: "deploy@acme.example" },
+
+  secrets: {
+    frontend: bitwarden.item("..."),
+    backend: bitwarden.item("..."),
+  },
+
+  files: {
+    backend: { "/app/service-account.json": bitwarden.item("...") },
+  },
+});
+```
+
+An environment's refs are read after the app's own, and refs merge in order with
+the later key winning. So the deployment can hold what every environment shares,
+or nothing at all, and each environment lays its own item over it. `files` merge
+by path: a path the environment names replaces the app's, and every other file
+stays.
+
+An environment file does not import the deployment, so an app name in it cannot
+be checked when it compiles. One that names no app is refused when the run
+starts, before a connection or a vault is opened, and `plan` refuses it too.
+
+The ids are pointers, not credentials. What keeps staging from reading
+production is the token: give each environment its own `BW_KEY` in
+`.env.<environment>.deploy`, or its own GitHub environment in CI, scoped in
+Secrets Manager to that environment's project.
+
+#### Steps that differ between environments
+
+A migration that reaches a managed database from the host in production and a
+service on the deployment network in staging is the same step with different
+settings. The deployment holds the one most environments share, and an
+environment that differs puts its own at the same point:
+
+```ts
+// redkite.config.ts
+steps: [migrate({ app: "backend", command: "yarn db:migrate" })],
+
+// redkite.staging.config.ts
+steps: [migrate({ app: "backend", command: "yarn db:migrate", network: "deployment" })],
+```
+
+A step at a point the deployment already fills replaces it for that environment,
+where it stood. It is the rule redkite's own four already follow, applied one
+level down. A step only the environment has runs ahead of the deployment's at
+the same slot, the way a plugin's does.
+
+Two steps at one point in one environment file are refused when the file is
+defined, and so is a step landing on a point a plugin already fills. `plan`
+prints the pipeline the environment will actually run.
 
 ```ts
 extraHosts: { "db.internal": "10.55.0.250" },
@@ -264,7 +331,7 @@ sits beside the deployment is refused too: it comes from one place or the other.
 | `build` | How the repository becomes an image. See presets below |
 | `dir` | Where the app sits in the repository, when it is not the whole of it |
 | `health` | Probed on the container itself, not through the proxy |
-| `secrets` | One ref or several, merged in order, written to `.env` in the image |
+| `secrets` | One ref or several, merged in order, handed to the container as its environment |
 | `files` | Container path to the item whose contents land there |
 | `volumes` | Volume name to container path, for state that outlives a deploy |
 
@@ -546,12 +613,13 @@ registered before `bitwarden.item()` resolves to anything. A deployment that
 names a provider nothing registers is refused before it builds, rather than
 reaching for a vault by name.
 
-It unlocks with `BW_KEY`, a session obtained elsewhere, and falls back to
-`BW_CLIENT_ID`, `BW_CLIENT_SECRET` and `BW_PASSWORD` when that is not set. A
-config that would rather name its own variable passes the session in:
-`bitwarden({ secrets: process.env.MY_VAULT_SESSION })`. One that reads no
-secrets at all needs none of them: redkite only opens the stores your config
-actually names.
+By default it reads Bitwarden Secrets Manager, and `BW_KEY` is the access
+token. A config that would rather name its own variable passes the token in:
+`bitwarden({ secrets: process.env.MY_ACCESS_TOKEN })`. The password manager is
+`bitwarden({ secrets: false })`, where `BW_KEY` is a session from
+`bw unlock --raw`, with `BW_CLIENT_ID`, `BW_CLIENT_SECRET` and `BW_PASSWORD`
+used to obtain one when it is not set. One that reads no secrets at all needs
+none of them: redkite only opens the stores your config actually names.
 
 #### Where a secret is, and where it is not
 
@@ -702,24 +770,6 @@ there is nothing to set before a step can use it.
 A step naming an app the deployment does not have fails before the run starts
 rather than half way through it.
 
-#### Saying which machine the migration goes through
-
-A migration reaches its database through one particular machine, and the step
-runs on whatever host the environment deploys to. Naming that machine turns a
-move nobody rechecked into a refusal:
-
-```ts
-migrate({
-  app: "backend",
-  command: "yarn db:migrate",
-  through: "deploy@staging.acme.example",
-})
-```
-
-Deploy that environment to any other host and the run stops before it touches
-anything. It is optional, and a deployment that leaves it out simply runs the
-migration wherever it deploys.
-
 #### The network a step runs on
 
 A migration defaults to `host`: the deploy host's own network stack, which is
@@ -763,11 +813,9 @@ first, and they sit at `swap:before` so they run while the old containers are
 still serving.
 
 ```ts
-steps: [
-  // Above the migrate, because steps run in the order they are listed
-  rdsSnapshot({ instance: "acme-production", region: "eu-west-1" }),
-  migrate({ app: "backend", command: "yarn db:migrate" }),
-]
+// A plugin's steps run ahead of the deployment's, so this lands above the migrate
+plugins: [rdsSnapshot({ instance: "acme-production", region: "eu-west-1" })],
+steps: [migrate({ app: "backend", command: "yarn db:migrate" })],
 ```
 
 `rdsSnapshot` goes through the AWS CLI, which every runner already has with the

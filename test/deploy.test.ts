@@ -200,20 +200,64 @@ describe("deploy", () => {
     assert.deepEqual(host.commands, [], "and the host is untouched");
   });
 
-  it("refuses a migration that goes through anything but the deploy host", async () => {
-    const elsewhere: Deployment = {
-      ...config,
-      steps: [
-        migrate({
-          app: "backend",
-          command: "yarn db:migrate",
-          through: "ubuntu@nowhere",
-        }),
-      ],
+  // A step in an environment file is at an ordinary point, so it replaces the
+  // deployment's there. Only the command the host was given can show which ran
+  it("runs the environment's migration in place of the deployment's", async () => {
+    const environments = config.environments ?? {};
+    const host = fakeHost({ existing: [back.container] });
+    for (const [container, body] of Object.entries(HEALTHY)) host.respond(container, body);
+
+    const own = migrate({ app: "backend", command: "yarn db:migrate:staging" });
+
+    await deploy({
+      config: {
+        ...config,
+        environments: { ...environments, staging: { ...environments["staging"]!, steps: [own] } },
+      },
+      environment: "staging",
+      host: host.host,
+      secrets,
+      health: { sleep: async () => {} },
+    });
+
+    const migrations = host.commands.filter((c) => c.includes("yarn db:migrate"));
+
+    assert.equal(migrations.length, 1, "one migration, not the shared one as well");
+    assert.match(migrations[0]!, /yarn db:migrate:staging$/);
+  });
+
+  // The file the container is created from is what the running process sees,
+  // so this is where another environment's item would do its damage
+  it("hands the container the environment's own item, and never another's", async () => {
+    const environments = config.environments ?? {};
+    const host = fakeHost({ existing: [back.container] });
+    for (const [container, body] of Object.entries(HEALTHY)) host.respond(container, body);
+
+    const read = async (id: string) => {
+      if (id === "staging-only") return "FROM=staging\n";
+      if (id === "production-only") return "FROM=production\n";
+      return "DATABASE_URL=postgres://user:pw@db.internal:5432/app\n";
     };
 
-    const host = await refuses(elsewhere, /ubuntu@nowhere/);
-    assert.deepEqual(host.commands, [], "and nothing on the host was touched");
+    await deploy({
+      config: {
+        ...config,
+        environments: {
+          ...environments,
+          staging: { ...environments["staging"]!, secrets: { backend: bitwarden.item("staging-only") } },
+          production: { ...environments["production"]!, secrets: { backend: bitwarden.item("production-only") } },
+        },
+      },
+      environment: "staging",
+      host: host.host,
+      secrets: { bitwarden: { read } },
+      health: { sleep: async () => {} },
+    });
+
+    const written = host.files.get("apps/backend/env") ?? "";
+
+    assert.match(written, /^FROM=staging$/m);
+    assert.doesNotMatch(written, /production/);
   });
 
   // Nothing in a config says an app needs a builder. Every app keeps one, so a

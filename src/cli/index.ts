@@ -1,4 +1,4 @@
-import { environmentOf } from "../config.js";
+import { environmentOf, withEnvironment } from "../config.js";
 import { deploy, verify } from "../deploy.js";
 import { Docker } from "../docker.js";
 import type { Host } from "../host.js";
@@ -211,7 +211,7 @@ function asLog(say: (message: string) => void): Log {
 }
 
 async function plan(environment: string, configPath?: string, read: string[] = []) {
-  const config = await loadConfig(configPath);
+  const config = withEnvironment(await loadConfig(configPath), environment);
   const topology = topologyFor(config, environment);
 
   const say = (message = "") => process.stdout.write(`${message}\n`);
@@ -549,7 +549,9 @@ async function run(
   configPath: string | undefined,
   options: RunOptions,
 ) {
-  const config = await loadConfig(configPath);
+  // Folded in before anything opens, so an environment naming an app that is
+  // not there is refused before a connection or a vault
+  const config = withEnvironment(await loadConfig(configPath), environment);
 
   // Fail on a missing environment before opening anything for it
   const topology = topologyFor(config, environment);

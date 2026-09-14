@@ -1,6 +1,6 @@
 import { build, type BuildContext, type BuildResult } from "./build.js";
 import { assertCheckable, runChecks } from "./checks.js";
-import { environmentOf } from "./config.js";
+import { environmentOf, withEnvironment } from "./config.js";
 import { Docker } from "./docker.js";
 import { envFileFor } from "./environment.js";
 import { healthcheck, type HealthDeps } from "./health.js";
@@ -68,11 +68,12 @@ export async function verify(options: DeployOptions): Promise<Finished> {
 
 async function start(run: Run, options: DeployOptions): Promise<Finished> {
   const log = options.log ?? silent;
+  const config = withEnvironment(options.config, options.environment);
 
   const setting: Omit<Context, "task"> = {
-    config: options.config,
+    config,
     environment: options.environment,
-    topology: topologyFor(options.config, options.environment),
+    topology: topologyFor(config, options.environment),
     host: options.host,
     docker: new Docker(options.host),
     secrets: options.secrets,
@@ -82,7 +83,7 @@ async function start(run: Run, options: DeployOptions): Promise<Finished> {
 
   // A plugin's steps lead, so a snapshot listed as a plugin runs above the
   // migration the deployment writes after it
-  const added = [...pluginSteps(options.config.plugins), ...(options.config.steps ?? [])];
+  const added = [...pluginSteps(config.plugins), ...(config.steps ?? [])];
 
   return await runPipeline(run, merge(supplied(options), added), setting, options.signal);
 }

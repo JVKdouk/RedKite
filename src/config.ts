@@ -1,6 +1,8 @@
 import { PROXY } from "./services/proxy.js";
 import { assertSteps } from "./pipeline.js";
 import { pluginSteps } from "./plugin.js";
+import { listRefs } from "./secrets/refs.js";
+import type { AnyStep } from "./pipeline.js";
 import type { Deployment, Environment } from "./types.js";
 
 // The one selected, from the one place worth looking. A deployment that carries
@@ -8,6 +10,72 @@ import type { Deployment, Environment } from "./types.js";
 // a default nobody can displace
 export function environmentOf(config: Deployment, name: string) {
   return config.environment ?? config.environments?.[name];
+}
+
+// The selected environment's items folded into the apps they name, after each
+// app's own. Refs merge in order and the later key wins, so the deployment holds
+// what every environment shares and the environment holds what differs
+export function withEnvironment(config: Deployment, name: string): Deployment {
+  const environment = environmentOf(config, name);
+  if (!environment?.secrets && !environment?.files && !environment?.steps) return config;
+
+  const { secrets = {}, files = {}, steps, ...rest } = environment;
+  assertNamesApps(config, name, [...Object.keys(secrets), ...Object.keys(files)]);
+
+  const apps = config.apps.map((app) => {
+    const refs = secrets[app.name];
+    const paths = files[app.name];
+    if (!refs && !paths) return app;
+
+    return {
+      ...app,
+      secrets: refs ? [...listRefs(app.secrets), ...listRefs(refs)] : app.secrets,
+      files: paths ? { ...app.files, ...paths } : app.files,
+    };
+  });
+
+  const folded = { ...config, apps, steps: steps ? stepsWith(config, steps) : config.steps };
+
+  // What was folded in leaves the environment, so folding it again adds nothing
+  // and a caller that already did it can hand the result on to one that will
+  if (config.environment) return { ...folded, environment: rest };
+  return { ...folded, environments: { ...config.environments, [name]: rest } };
+}
+
+// A step at a point the deployment already fills replaces it for this
+// environment, where it stood. One only the environment has leads, the way a
+// plugin's does, so a snapshot added here still runs above the shared migration
+function stepsWith(config: Deployment, given: AnyStep[]) {
+  // Before the replacement map, which would otherwise keep the last of two and
+  // drop the other without a word
+  assertSteps(given);
+
+  const shared = config.steps ?? [];
+  const claimed = new Set(shared.map((step) => step.point));
+  const replacing = new Map(given.map((step) => [step.point, step]));
+
+  const steps = [
+    ...given.filter((step) => !claimed.has(step.point)),
+    ...shared.map((step) => replacing.get(step.point) ?? step),
+  ];
+
+  // A plugin fills points too, and one the environment lands on is the same
+  // collision defineDeployment refuses
+  assertSteps([...pluginSteps(config.plugins), ...steps]);
+  return steps;
+}
+
+// An environment file does not import the deployment, so an app name there
+// cannot be checked when it compiles. A typo would otherwise read nothing
+function assertNamesApps(config: Deployment, environment: string, names: string[]) {
+  const apps = new Set(config.apps.map((app) => app.name));
+  const unknown = names.filter((name) => !apps.has(name));
+  if (unknown.length === 0) return;
+
+  throw new Error(
+    `${environment} gives secrets to ${unknown.join(", ")}, which this deployment ` +
+      `has no app by that name for. Its apps are ${[...apps].join(", ")}`,
+  );
 }
 
 // Identity, but it pins the type so a missing health predicate fails to
@@ -31,6 +99,7 @@ export function defineDeployment<const T extends Deployment & { environments?: n
 // Identity, for the environment a redkite.<name>.config.ts holds. It pins the
 // type the same way defineDeployment does, so a missing subnet fails to compile
 export function defineEnvironment<const T extends Environment>(environment: T): T {
+  if (environment.steps) assertSteps(environment.steps);
   return environment;
 }
 

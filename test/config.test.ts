@@ -4,7 +4,16 @@ import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
 import base from "./deployment.js";
-import type { Deployment } from "../src/index.js";
+import {
+  bitwarden,
+  defineEnvironment,
+  definePlugin,
+  defineStep,
+  listRefs,
+  migrate,
+  withEnvironment,
+} from "../src/index.js";
+import type { Deployment, Environment } from "../src/index.js";
 import { loadConfig } from "../src/cli/config.js";
 import { buildingHere, positional, stopper } from "../src/cli/index.js";
 import { needsAgent } from "../src/cli/agent.js";
@@ -168,6 +177,216 @@ describe("asking a run to stop", () => {
 });
 
 // --local is the same instruction as buildOn: "local", for one run
+// What differs between staging and production is usually which vault item, and
+// an environment file is where the rest of what differs already lives
+describe("an environment's own secrets", () => {
+  const staging: Environment = { branch: "staging", subnet: "10.1.0", publicPort: 80 };
+  const production: Environment = { branch: "main", subnet: "10.2.0", publicPort: 80 };
+
+  const deployment = (given: Partial<Record<"staging" | "production", Environment>>) =>
+    ({ ...base, environments: { staging, production, ...given } }) satisfies Deployment;
+
+  const appOf = (config: Deployment, name: string) => {
+    const app = config.apps.find((item) => item.name === name);
+    if (!app) throw new Error(`no ${name} in the fixture`);
+    return app;
+  };
+
+  it("reads the environment's item after the app's own", () => {
+    const config = deployment({
+      staging: { ...staging, secrets: { backend: bitwarden.item("staging-backend") } },
+    });
+
+    const merged = withEnvironment(config, "staging");
+    const before = listRefs(appOf(base, "backend").secrets);
+
+    assert.deepEqual(listRefs(appOf(merged, "backend").secrets), [
+      ...before,
+      bitwarden.item("staging-backend"),
+    ]);
+  });
+
+  it("gives an app with none of its own the environment's alone", () => {
+    const config = deployment({
+      staging: { ...staging, secrets: { frontend: bitwarden.item("staging-frontend") } },
+    });
+
+    const merged = withEnvironment(config, "staging");
+
+    assert.deepEqual(listRefs(appOf(merged, "frontend").secrets), [
+      bitwarden.item("staging-frontend"),
+    ]);
+  });
+
+  it("lays the environment's files over the app's own, path by path", () => {
+    const config = deployment({
+      production: {
+        ...production,
+        files: {
+          backend: {
+            "/app/service-account.json": bitwarden.item("production-account"),
+            "/etc/ca.pem": bitwarden.item("production-ca"),
+          },
+        },
+      },
+    });
+
+    const files = appOf(withEnvironment(config, "production"), "backend").files;
+
+    assert.deepEqual(files?.["/app/service-account.json"], bitwarden.item("production-account"));
+    assert.deepEqual(files?.["/etc/ca.pem"], bitwarden.item("production-ca"));
+  });
+
+  it("reads only the environment being deployed", () => {
+    const config = deployment({
+      staging: { ...staging, secrets: { backend: bitwarden.item("staging-backend") } },
+      production: { ...production, secrets: { backend: bitwarden.item("production-backend") } },
+    });
+
+    const ids = listRefs(appOf(withEnvironment(config, "staging"), "backend").secrets).map(
+      (ref) => ref.id,
+    );
+
+    assert.ok(ids.includes("staging-backend"));
+    assert.ok(!ids.includes("production-backend"), "never another environment's item");
+  });
+
+  it("leaves an app the environment does not name as it was", () => {
+    const config = deployment({
+      staging: { ...staging, secrets: { backend: bitwarden.item("staging-backend") } },
+    });
+
+    assert.equal(appOf(withEnvironment(config, "staging"), "frontend"), appOf(config, "frontend"));
+  });
+
+  it("refuses an app name the deployment does not have, and says which it has", () => {
+    const config = deployment({
+      staging: { ...staging, secrets: { worker: bitwarden.item("staging-worker") } },
+    });
+
+    assert.throws(() => withEnvironment(config, "staging"), /staging gives secrets to worker.*frontend, backend/);
+  });
+
+  it("refuses one named only for its files", () => {
+    const config = deployment({
+      staging: { ...staging, files: { wroker: { "/app/key.pem": bitwarden.item("key") } } },
+    });
+
+    assert.throws(() => withEnvironment(config, "staging"), /wroker/);
+  });
+
+  // The CLI folds before it opens anything and the run folds again when it
+  // starts. Doing it twice must be doing it once
+  it("adds nothing when folded a second time", () => {
+    const config = deployment({
+      staging: { ...staging, secrets: { backend: bitwarden.item("staging-backend") } },
+    });
+
+    const once = withEnvironment(config, "staging");
+    const twice = withEnvironment(once, "staging");
+
+    assert.deepEqual(listRefs(appOf(twice, "backend").secrets), listRefs(appOf(once, "backend").secrets));
+  });
+
+  it("folds an environment the deployment carries inline the same way", () => {
+    const config = {
+      ...base,
+      environment: { ...staging, secrets: { backend: bitwarden.item("inline-backend") } },
+    } satisfies Deployment;
+
+    const ids = listRefs(appOf(withEnvironment(config, "anything"), "backend").secrets).map(
+      (ref) => ref.id,
+    );
+
+    assert.ok(ids.includes("inline-backend"));
+  });
+
+  it("hands back the deployment itself when the environment names no secrets", () => {
+    const config = deployment({});
+
+    assert.equal(withEnvironment(config, "staging"), config);
+  });
+});
+
+// How a migration reaches its database, and whether anything is snapshotted
+// first, differ by environment. A step in an environment file says so there
+describe("an environment's own steps", () => {
+  const staging: Environment = { branch: "staging", subnet: "10.1.0", publicPort: 80 };
+  const production: Environment = { branch: "main", subnet: "10.2.0", publicPort: 80 };
+
+  const report = defineStep("build:after:report", (built) => built);
+  const shared = migrate({ app: "backend", command: "yarn db:migrate" });
+
+  const deployment = (given: Partial<Record<"staging" | "production", Environment>>) =>
+    ({
+      ...base,
+      steps: [report, shared],
+      environments: { staging, production, ...given },
+    }) satisfies Deployment;
+
+  it("replaces the deployment's step at the same point, where it stood", () => {
+    const own = migrate({ app: "backend", command: "yarn db:migrate", network: "deployment" });
+    const merged = withEnvironment(deployment({ staging: { ...staging, steps: [own] } }), "staging");
+
+    assert.deepEqual(merged.steps, [report, own]);
+  });
+
+  it("runs a step only the environment has ahead of the deployment's", () => {
+    const snapshot = defineStep("swap:before:snapshot-db", (built) => built);
+    const merged = withEnvironment(
+      deployment({ production: { ...production, steps: [snapshot] } }),
+      "production",
+    );
+
+    assert.deepEqual(merged.steps, [snapshot, report, shared]);
+  });
+
+  it("reads only the environment being deployed", () => {
+    const own = migrate({ app: "backend", command: "yarn db:migrate:production" });
+    const merged = withEnvironment(
+      deployment({ production: { ...production, steps: [own] } }),
+      "staging",
+    );
+
+    assert.deepEqual(merged.steps, [report, shared]);
+  });
+
+  // Replacing by point would otherwise keep the second and drop the first
+  it("refuses two steps at one point in one environment", () => {
+    const one = migrate({ app: "backend", command: "yarn db:migrate" });
+    const two = migrate({ app: "backend", command: "yarn db:migrate:again" });
+    const config = deployment({ staging: { ...staging, steps: [one, two] } });
+
+    assert.throws(() => withEnvironment(config, "staging"), /Two steps share the point swap:before:migrate-backend/);
+  });
+
+  it("refuses them when the environment file is defined, before anything loads it", () => {
+    const one = migrate({ app: "backend", command: "yarn db:migrate" });
+    const two = migrate({ app: "backend", command: "yarn db:migrate:again" });
+
+    assert.throws(() => defineEnvironment({ ...staging, steps: [one, two] }), /Two steps share/);
+  });
+
+  it("refuses a step at a point a plugin already fills", () => {
+    const point = "swap:before:snapshot-db";
+    const plugin = definePlugin({ name: "snapshots", steps: [defineStep(point, (built) => built)] });
+
+    const config = {
+      ...deployment({ staging: { ...staging, steps: [defineStep(point, (built) => built)] } }),
+      plugins: [plugin],
+    } satisfies Deployment;
+
+    assert.throws(() => withEnvironment(config, "staging"), /Two steps share the point swap:before:snapshot-db/);
+  });
+
+  it("adds nothing when folded a second time", () => {
+    const snapshot = defineStep("swap:before:snapshot-db", (built) => built);
+    const once = withEnvironment(deployment({ staging: { ...staging, steps: [snapshot] } }), "staging");
+
+    assert.deepEqual(withEnvironment(once, "staging").steps, once.steps);
+  });
+});
+
 describe("building here for one run", () => {
   const config = {
     project: "acme",

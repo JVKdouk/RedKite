@@ -26,6 +26,16 @@ export type Environment = {
   // derives. For a database or a legacy service that has no DNS the apps can
   // use, and whose address is what differs between environments
   extraHosts?: Record<string, string>;
+  // App name to the items this environment reads, after the app's own. Which
+  // item is usually what differs between staging and production, and the rest
+  // of what differs already lives here
+  secrets?: Record<string, SecretRefs>;
+  // App name to container path to item, laid over the app's own files
+  files?: Record<string, Record<string, SecretRef>>;
+  // Steps for this environment alone. One at a point the deployment already
+  // fills replaces it here, where it stood. One only this environment has runs
+  // ahead of the deployment's, so a snapshot lands above the migration
+  steps?: AnyStep[];
 };
 
 // Where a step's container is attached. "host" is the deploy host's own stack,

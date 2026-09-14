@@ -19,6 +19,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # A GitHub environment per redkite environment, each holding its own BW_KEY.
+    # A Secrets Manager token scoped to production is the only thing that can
+    # read production's items, whatever id a config names
+    environment: production
 
     steps:
       # Only for the deployment file. The apps name repositories, and the
@@ -33,9 +37,10 @@ jobs:
           # Reaches the deploy host, and is forwarded so that host can clone
           ssh-key: ${{ secrets.DEPLOY_KEY }}
         env:
-          BW_CLIENT_ID: ${{ secrets.BW_CLIENT_ID }}
-          BW_CLIENT_SECRET: ${{ secrets.BW_CLIENT_SECRET }}
-          BW_PASSWORD: ${{ secrets.BW_PASSWORD }}
+          # A Secrets Manager access token, which is what bitwarden() reads. A
+          # deployment on the password manager says bitwarden({ secrets: false })
+          # and sets BW_CLIENT_ID, BW_CLIENT_SECRET and BW_PASSWORD instead
+          BW_KEY: ${{ secrets.BW_KEY }}
 
       # A cancelled job is killed rather than asked, so the run that was moving
       # addresses never gets to put them back itself. This reads what the host

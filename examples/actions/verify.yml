@@ -17,6 +17,9 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # Its own GitHub environment, so the token a pull request can use reads the
+    # test environment's items and nothing a deployed one serves from
+    environment: test
 
     steps:
       - uses: actions/checkout@v4
@@ -30,9 +33,7 @@ jobs:
           command: verify
           environment: test
         env:
-          BW_CLIENT_ID: ${{ secrets.BW_CLIENT_ID }}
-          BW_CLIENT_SECRET: ${{ secrets.BW_CLIENT_SECRET }}
-          BW_PASSWORD: ${{ secrets.BW_PASSWORD }}
+          BW_KEY: ${{ secrets.BW_KEY }}
 
       # A verify brings a network and its services up and never swaps, so what
       # a cancelled or finished run leaves behind is those. Stopped rather than
