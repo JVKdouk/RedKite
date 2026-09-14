@@ -1,4 +1,4 @@
-import { build, type BuildContext, type BuildResult } from "./build.js";
+import { build, refOf, sourceOf, type BuildContext, type BuildResult } from "./build.js";
 import { assertCheckable, runChecks } from "./checks.js";
 import { environmentOf, withEnvironment } from "./config.js";
 import { Docker } from "./docker.js";
@@ -26,6 +26,7 @@ import { pluginSteps } from "./plugin.js";
 import { readEnv, readRef, type SecretStores } from "./secrets/refs.js";
 import { ensureService } from "./services/ensure.js";
 import { plannedServices } from "./services/planned.js";
+import type { Source } from "./source.js";
 import { topologyFor, type AppTopology, type Topology } from "./topology.js";
 import type { AppSpec, Deployment } from "./types.js";
 
@@ -215,8 +216,14 @@ async function release(
     // Inside, because the swap is not over until this says so. A stop lands
     // here more often than anywhere else: it is the longest part, and by now
     // every address has already moved
-    if (!(await checkAll(context, health))) {
+    const unhealthy = await checkAll(context, health);
+
+    if (unhealthy.size > 0) {
       context.log.fail("Health checks failed, reverting");
+
+      // Before the revert, which gives the live name back to the container it
+      // retired. Asked after it, the logs would be the previous release's
+      await dumpLogs(context, apps, unhealthy);
       await Promise.all(apps.map((app) => revert(docker, topology, app)));
 
       return {
@@ -307,11 +314,46 @@ async function checkAll(context: Context, health: Omit<HealthDeps, "probe">) {
         log,
       };
 
-      return await healthcheck(target.container, target.port, app.health, deps);
+      const healthy = await healthcheck(target.container, target.port, app.health, deps);
+      return healthy ? undefined : target.container;
     }),
   );
 
-  return !results.includes(false);
+  // The containers that failed, since what gets written out for each depends on
+  // whether it was one of them
+  return new Set(results.filter((container): container is string => container !== undefined));
+}
+
+// Enough to hold a stack trace and what led up to it, not a day of access logs
+const LOG_TAIL = 200;
+
+// Every new container's, not only the ones that failed: a backend that never came
+// up is often explained by what the frontend says it could not reach. Each is a
+// step of its own, so the crash log gives it a file, and the one that failed its
+// check is marked failed, which is what puts its tail on the screen at the end
+async function dumpLogs(context: Context, apps: AppTopology[], unhealthy: Set<string>) {
+  await Promise.all(
+    apps.map(async (app) => {
+      const task = context.log.step(`Logs of ${app.name}`);
+      task.detail(`the last ${LOG_TAIL} lines of ${app.container}`);
+
+      const result = await context.docker.container.logs(app.container, LOG_TAIL);
+
+      // Said, and left there. The revert still has to run, and logs that could
+      // not be read are no reason to leave a failed release serving
+      if (result.code !== 0) {
+        task.fail(`could not read the logs of ${app.container}: ${result.stdout || result.stderr}`);
+        return;
+      }
+
+      const lines = result.stdout.split("\n").filter((line) => line.length > 0);
+      for (const line of lines) task.line(line);
+
+      const said = `${lines.length} lines from ${app.container}`;
+      if (unhealthy.has(app.container)) task.fail(`${said}, which failed its health check`);
+      else task.done(said);
+    }),
+  );
 }
 
 // The proxy is one of these, derived rather than listed. What each should be
@@ -347,6 +389,8 @@ async function buildAll(
 
   return await Promise.all(
     config.apps.map(async (app) => {
+      const placed = appOf(topology, app.name);
+      const source = await clone(app, placed, here ?? context.host, environment.branch, log);
       const task = log.step(`Building ${app.name}`);
 
       try {
@@ -374,7 +418,7 @@ async function buildAll(
           output: task.line,
         };
 
-        const result = await build(app, appOf(topology, app.name), buildContext);
+        const result = await build(app, placed, buildContext, source);
         task.done(`${result.release.slice(0, 7)}${result.cached ? " (held)" : ""}`);
 
         return { app, result };
@@ -384,6 +428,41 @@ async function buildAll(
       }
     }),
   );
+}
+
+// A step of its own, ahead of the build that reads it. A wrong branch or an
+// unreachable repository shows here, and folded into the build it was a detail
+// that scrolled past without ever saying what it fetched
+async function clone(
+  app: AppSpec,
+  placed: AppTopology,
+  host: Host,
+  branch: string,
+  log: Log,
+): Promise<Source | undefined> {
+  // A directory is read where it is, not cloned, and the build still does that
+  if (!app.repo) return undefined;
+
+  const ref = refOf(app, branch);
+  const what = `${app.repo}, ${ref.kind} ${ref.name}`;
+  const task = log.step(`Cloning ${app.name}`);
+
+  try {
+    task.detail(what);
+    const source = await sourceOf(app, placed, {
+      host,
+      branch,
+      detail: task.detail,
+      output: task.line,
+    });
+
+    // Said again at the end, where it outlasts the details that replaced it
+    task.done(`${what} at ${source.release.slice(0, 7)}`);
+    return source;
+  } catch (error) {
+    task.fail(`${app.name} could not clone ${what}`);
+    throw error;
+  }
 }
 
 async function resolveFiles(app: AppSpec, stores: SecretStores) {

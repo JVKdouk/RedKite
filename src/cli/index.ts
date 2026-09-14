@@ -17,6 +17,7 @@ import type { Deployment, DeployHost } from "../types.js";
 import { needsAgent, requireAgent } from "./agent.js";
 import { loadConfig, projectRoot } from "./config.js";
 import { loadDotenv } from "./dotenv.js";
+import { dumpCrash, recording } from "./crash.js";
 import { createLog, describeFailure } from "./log.js";
 
 // One command that reads the config and does everything under it: the agent,
@@ -42,7 +43,7 @@ of the project, and everything below it is derived.
 
 // Wraps a host rather than living inside one, so both implementations are
 // measured the same way and neither knows it is being timed
-function measured(host: Host, log?: Log) {
+function measured(host: Host, say?: (line: string) => void) {
   const totals = { commands: 0, commandMs: 0, files: 0 };
 
   const wrapped: Host = {
@@ -61,7 +62,7 @@ function measured(host: Host, log?: Log) {
 
       // The exit code matters: several of these are allowed to fail, and a
       // deploy reading verbose output is one where somebody wants to know which
-      log?.(`  $ ${command}  ${Date.now() - started}ms exit ${result.code}`);
+      say?.(`  $ ${command}  ${Date.now() - started}ms exit ${result.code}`);
       return result;
     },
 
@@ -568,10 +569,37 @@ async function run(
   // failure path, and the finally below removes the scratch directory
   const stopping = new AbortController();
 
-  const log = createLog({
-    ...options,
-    onQuit: () => stop(),
-  });
+  // Everything the run says still reaches the view. The recording is what a
+  // crash log is written from, since the view keeps only each step's tail
+  const recorder = recording(
+    createLog({
+      ...options,
+      onQuit: () => stop(),
+    }),
+  );
+
+  const log = recorder.log;
+
+  // Before the view closes, so where the log went is among what it writes out.
+  // A log that cannot be written must not replace the failure it was recording
+  const dumped = async (outcome: string, error?: unknown) => {
+    try {
+      const path = await dumpCrash(config, recorder.transcript, {
+        project: config.project,
+        environment,
+        command: kind,
+        version: await version(),
+        argv: process.argv.slice(2),
+        outcome,
+        at: Date.now(),
+        error,
+      });
+
+      if (path) log.warn(`Crash logs written to ${path}`);
+    } catch (failure) {
+      log.warn(`Could not write the crash log: ${describeFailure(failure).split("\n")[0]}`);
+    }
+  };
 
   // Read by the wait below, so a press during it hardens what that is sending
   let hardest: "TERM" | "KILL" = "TERM";
@@ -602,7 +630,7 @@ async function run(
   try {
     const meter = measured(
       await hostFor(deployHost, log, stopping.signal),
-      options.verbose ? log : undefined,
+      options.verbose ? log : recorder.command,
     );
 
     host = meter.host;
@@ -633,15 +661,17 @@ async function run(
 
     log.fail(`Reverted ${result.reverted.join(", ")}`);
     process.exitCode = 1;
+    await dumped("reverted");
   } catch (error) {
     // Whatever the command in flight said about being killed is noise: what
-    // happened is that somebody asked for it to stop
+    // happened is that somebody asked for it to stop, which is not a crash
     if (stopping.signal.aborted) {
       log.fail("Stopped");
       process.exitCode = 130;
     } else {
       log.fail(describeFailure(error));
       process.exitCode = 1;
+      await dumped("failed", error);
     }
   } finally {
     // Nothing leaves while the build is still running. The signal a press

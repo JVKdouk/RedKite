@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import config from "./deployment.js";
-import type { Deployment } from "../src/index.js";
+import type { Deployment, Log } from "../src/index.js";
 import {
   bitwarden,
   deploy,
@@ -495,5 +495,210 @@ describe("a service with secrets", () => {
     const create = host.commands.find((c) => c.includes("--name acme-staging-postgres"))!;
 
     assert.match(create, /-v acme-staging-postgres-data:\/var\/lib\/postgresql\/data/);
+  });
+});
+
+// Every step and everything said under it, in order, so a test can say what a
+// person watching would have seen
+function recorded() {
+  const events: string[] = [];
+  const say = (event: string) => {
+    events.push(event);
+  };
+
+  const log = Object.assign((message: string) => say(`info ${message}`), {
+    warn: (message: string) => say(`warn ${message}`),
+    fail: (message: string) => say(`fail ${message}`),
+    done: (message: string) => say(`done ${message}`),
+    step: (label: string) => {
+      say(`step ${label}`);
+
+      return {
+        detail: (message: string) => say(`${label} · ${message}`),
+        line: (message: string) => say(`${label} | ${message}`),
+        done: (message?: string) => say(`${label} done ${message ?? ""}`),
+        fail: (message: string) => say(`${label} failed ${message}`),
+      };
+    },
+  }) satisfies Log;
+
+  return { log, events };
+}
+
+// A clone is where a wrong branch or an unreachable repository shows. Folded
+// into the build, it scrolled past without saying what it fetched
+describe("cloning each app", () => {
+  async function deployWith(options: { config?: Deployment; refuse?: string } = {}) {
+    const host = fakeHost({ existing: [back.container] });
+    for (const [container, body] of Object.entries(HEALTHY)) host.respond(container, body);
+    if (options.refuse) host.refuse(options.refuse);
+
+    const { log, events } = recorded();
+
+    try {
+      await deploy({
+        config: options.config ?? config,
+        environment: "staging",
+        host: host.host,
+        secrets,
+        log,
+        health: { sleep: async () => {} },
+      });
+
+      return { events, host, error: undefined };
+    } catch (error) {
+      return { events, host, error };
+    }
+  }
+
+  const withBackend = (change: (app: Deployment["apps"][number]) => Deployment["apps"][number]) => ({
+    ...config,
+    apps: config.apps.map((app) => (app.name === "backend" ? change(app) : app)),
+  });
+
+  it("clones each app as a step of its own, before building it", async () => {
+    const { events } = await deployWith();
+
+    for (const name of ["frontend", "backend"]) {
+      const cloning = events.indexOf(`step Cloning ${name}`);
+      const building = events.indexOf(`step Building ${name}`);
+
+      assert.ok(cloning >= 0, `a step for cloning ${name}`);
+      assert.ok(cloning < building, `and it comes before ${name} builds`);
+    }
+  });
+
+  it("says which repository and which branch it is cloning, as it starts", async () => {
+    const { events } = await deployWith();
+
+    assert.ok(
+      events.includes("Cloning backend · git@github.com:acme/backend.git, branch staging"),
+      events.filter((event) => event.startsWith("Cloning backend")).join("\n"),
+    );
+  });
+
+  it("ends the step with the commit it landed on", async () => {
+    const { events } = await deployWith();
+
+    assert.ok(
+      events.includes("Cloning backend done git@github.com:acme/backend.git, branch staging at abc1234"),
+    );
+  });
+
+  it("names a pinned tag rather than the environment's branch", async () => {
+    const { events } = await deployWith({ config: withBackend((app) => ({ ...app, tag: "v1.2.3" })) });
+
+    assert.ok(events.includes("Cloning backend · git@github.com:acme/backend.git, tag v1.2.3"));
+  });
+
+  it("fails the clone, not the build, when the repository cannot be fetched", async () => {
+    const { events, error } = await deployWith({
+      refuse: "clone --mirror 'git@github.com:acme/backend.git'",
+    });
+
+    assert.ok(error, "the run stops");
+    assert.ok(
+      events.includes("Cloning backend failed backend could not clone git@github.com:acme/backend.git, branch staging"),
+    );
+    assert.ok(!events.includes("step Building backend"), "and never starts building it");
+  });
+
+  it("clones once, and the build does not fetch it again", async () => {
+    const { host } = await deployWith();
+    const mirrors = host.commands.filter((command) => command.includes("clone --mirror 'git@github.com:acme/backend.git'"));
+
+    assert.equal(mirrors.length, 1);
+  });
+
+  it("reads a directory without a clone step, since nothing is cloned", async () => {
+    const { events } = await deployWith({
+      config: withBackend((app) => ({ ...app, repo: undefined, path: "/srv/backend" })),
+    });
+
+    assert.ok(!events.includes("step Cloning backend"));
+    assert.ok(events.includes("step Building backend"));
+  });
+});
+
+// A container that fails its check is renamed out of the way by the revert, and
+// the live name goes back to the release before it. What it printed on the way
+// down is the reason it failed, and nothing else was keeping it
+describe("when a health check fails", () => {
+  const BACK_LOGS = [
+    "2026-09-14T10:00:01.000Z Listening on 3001",
+    "2026-09-14T10:00:02.000Z TypeError: Cannot read properties of undefined (reading 'url')",
+  ].join("\n");
+
+  async function failing(options: { bodies?: Record<string, string>; refuse?: string } = {}) {
+    const host = fakeHost({ existing: [back.container] });
+    const bodies = options.bodies ?? { ...HEALTHY, [back.container]: '{"status":"down"}' };
+
+    for (const [container, body] of Object.entries(bodies)) host.respond(container, body);
+    host.logs(back.container, BACK_LOGS);
+    host.logs(front.container, "2026-09-14T10:00:01.000Z ready on 3000");
+    if (options.refuse) host.refuse(options.refuse);
+
+    const { log, events } = recorded();
+
+    const result = await deploy({
+      config,
+      environment: "staging",
+      host: host.host,
+      secrets,
+      log,
+      health: { sleep: async () => {} },
+    });
+
+    return { result, events, host };
+  }
+
+  it("writes out what every new container printed", async () => {
+    const { events } = await failing();
+
+    assert.ok(events.includes(`Logs of backend | ${BACK_LOGS.split("\n")[1]}`));
+    assert.ok(events.includes("Logs of frontend | 2026-09-14T10:00:01.000Z ready on 3000"));
+  });
+
+  it("reads them before the revert gives the live name back to the old release", async () => {
+    const { host } = await failing();
+
+    const read = host.commands.findIndex((c) => c.startsWith("container logs") && c.includes(back.container));
+    const renamed = host.commands.findIndex((c) => c === `container rename ${back.container} ${back.failed}`);
+
+    assert.ok(read >= 0, "the logs were read");
+    assert.ok(renamed >= 0, "and the revert renamed it away");
+    assert.ok(read < renamed, "first");
+  });
+
+  it("marks the container that failed its check, and only that one", async () => {
+    const { events } = await failing();
+
+    assert.ok(
+      events.includes(`Logs of backend failed 2 lines from ${back.container}, which failed its health check`),
+    );
+    assert.ok(events.includes(`Logs of frontend done 1 lines from ${front.container}`));
+  });
+
+  it("asks for the last 200 lines of both streams, stamped", async () => {
+    const { host } = await failing();
+
+    assert.ok(
+      host.commands.includes(`container logs --tail 200 --timestamps ${back.container} 2>&1`),
+    );
+  });
+
+  it("reads nothing when every check passes", async () => {
+    const { host, events } = await failing({ bodies: HEALTHY });
+
+    assert.ok(!host.commands.some((c) => c.startsWith("container logs")));
+    assert.ok(!events.some((event) => event.startsWith("step Logs of")));
+  });
+
+  it("still reverts when the logs cannot be read", async () => {
+    const { result, events } = await failing({ refuse: "container logs" });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.reverted.sort(), [back.container, front.container].sort());
+    assert.ok(events.some((event) => event.startsWith(`Logs of backend failed could not read the logs of ${back.container}`)));
   });
 });

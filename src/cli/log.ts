@@ -146,7 +146,7 @@ export function describeFailure(error: unknown) {
 
 const DEPTH = 8;
 
-function causes(error: Error) {
+export function causes(error: Error) {
   const chain: Error[] = [];
   let current: unknown = error;
 

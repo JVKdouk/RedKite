@@ -605,3 +605,85 @@ removed, and passes with either one taken out alone.
 
 Not done: turning a deployment's step off in one environment. Nothing needs it
 yet, because a verify run never reaches swap and so never migrates.
+
+## A crash leaves its logs behind
+
+- [x] `recording(log)` wraps whichever log the run has, the view or the plain
+      writer, and hands every call on unchanged. Beside it, it keeps everything
+      said, in order, with every step's details and output lines in full. The
+      view keeps a step's last 2000 lines and the alternate screen takes the rest
+- [x] Host commands kept whether or not `--verbose` showed them
+- [x] A run that throws, or a deploy that reverts, writes
+      `/tmp/<project>/<environment>/crash-<time>/`: `run.log` with the header,
+      the whole error chain with every stack, an index of the steps and the log
+      in order, and one numbered file per step, so each app's build is its own
+- [x] A run somebody stopped writes nothing. It is not a crash
+- [x] `/tmp` itself rather than TMPDIR, so the path is where a person is told to
+      look. Directories 700 and files 600, since /tmp is shared and a build can
+      print more than it meant to
+- [x] The project and environment are made safe as path segments, since the
+      environment arrives on the command line
+- [x] `options: { crashLog: false }` on the deployment turns it off
+- [x] A log that cannot be written says so and does not replace the failure
+
+19 tests. Each behaviour reverted to check a test fails: a line not handed on
+to the view, steps trimmed as the view trims them, step output repeated in
+run.log, an unsafe path, the option ignored, files readable by everyone, steps
+not numbered, and host commands dropped. Writing into an existing crash
+directory is refused twice over, by the directory and by each file, and the test
+for it passes with either one removed alone.
+
+Confirmed through the real CLI: a deploy with no BW_KEY failed in the vault
+step, wrote run.log with the full stack and a file for the step, 700 and 600,
+and said where. With crashLog false the same run wrote nothing. Not confirmed
+live: a failing build's output in its step file, which needs a daemon; the tests
+cover it with 5000 lines.
+
+## Cloning is a step of its own
+
+- [x] `Cloning <app>` ahead of each `Building <app>`. The clone used to be the
+      first few details of the build, replaced as they came and never saying
+      which repository it was fetching
+- [x] It says the repository and the branch, tag or commit as it starts, and
+      again with the commit it landed on when it ends, so the row, the summary
+      and a plain log all keep them
+- [x] A repository that cannot be reached, or a ref it does not have, fails the
+      clone step and the build never starts. It has a crash log file of its own
+- [x] `sourceOf()` split out of `build()`, which takes the source the step
+      already checked out. Called without one, as a library caller would, it
+      still fetches for itself
+- [x] An app built from a directory is read rather than cloned, and has no
+      clone step
+
+7 tests. Each reverted to check a test fails: no clone step, the repository not
+said, the commit not said at the end, the environment's branch said for a pinned
+tag, the build fetching a second time, a directory given a clone step, and a
+failed clone left unmarked.
+
+Not run live: a deploy reaches setup, which creates networks and services, before
+anything is cloned, and there is no deployment here to run one against.
+
+## A failed health check says what the containers printed
+
+- [x] `checkAll` answers with the containers that failed rather than a yes or no,
+      because what is written out for each depends on it
+- [x] On a failure, a `Logs of <app>` step for every new container with its last
+      200 lines, both streams, stamped by docker. Every one, not only the one
+      that failed: a backend that never came up is often explained by what
+      another app says it could not reach
+- [x] Read before the revert. The revert renames the new container out of the
+      way and gives the live name back to the release before it, so logs asked
+      for afterwards are the old release's
+- [x] The container that failed its check is marked failed, which puts its last
+      lines on the screen when the run ends. Each is a step, so each has a crash
+      log file
+- [x] Logs that cannot be read are said on their step and the revert still runs
+- [x] `DockerContainer.logs(name, tail)`, and the fake host answers it only while
+      the container exists
+
+6 tests. Each reverted to check a test fails: logs read after the revert, none
+written, every container marked failed, only the failed one read, stderr and
+timestamps dropped, and a failed read thrown instead of reported.
+
+Not run live, for the same reason as the clone step: there is no deployment here
+to fail a health check against.

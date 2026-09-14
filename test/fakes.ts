@@ -25,6 +25,8 @@ export function fakeHost(
   // command that exits non-zero, and there is no other way to say so
   const refuse: string[] = [];
   const piped: string[] = [];
+  // What each container has printed, as docker logs would give it back
+  const logs = new Map<string, string>();
 
   const ok = (stdout = ""): Result => ({ code: 0, stdout, stderr: "" });
 
@@ -103,6 +105,14 @@ export function fakeHost(
       containers.delete(words[2]!);
       return ok();
     }
+    if (command.startsWith("container logs")) {
+      // Only while it exists: a container the revert removed took its output
+      // with it, which is why the deploy has to read it first
+      const name = words.find((word) => containers.has(word));
+      if (!name) return { code: 1, stdout: "Error: No such container", stderr: "" };
+
+      return ok(logs.get(name) ?? "");
+    }
     if (command.startsWith("exec ")) {
       return ok(health.get(words[1]!) ?? "{}");
     }
@@ -172,5 +182,6 @@ export function fakeHost(
     respond: (container: string, body: string) => health.set(container, body),
     // Makes any command holding this exit non-zero
     refuse: (needle: string) => refuse.push(needle),
+    logs: (container: string, text: string) => logs.set(container, text),
   };
 }

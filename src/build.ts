@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import type { Docker } from "./docker.js";
 import { BUILDER_STAGE, renderDockerfile, renderDockerignore } from "./dockerfile.js";
-import type { Ref } from "./source.js";
+import type { Ref, Source } from "./source.js";
 import type { Host } from "./host.js";
 import { prepareSource } from "./source.js";
 import type { AppTopology } from "./topology.js";
@@ -62,16 +62,14 @@ export function refOf(app: AppSpec, branch: string): Ref {
   return { kind: "branch", name: app.branch ?? branch };
 }
 
-export async function build(
+// Where the app's source comes from, cloned or read. Its own call, so a run can
+// make the clone a step of its own ahead of the build that reads it
+export async function sourceOf(
   app: AppSpec,
   topology: AppTopology,
-  context: BuildContext,
-): Promise<BuildResult> {
-  const { host, docker } = context;
-  const spec = app.build;
-  const detail = context.detail ?? (() => {});
-
-  const source = await prepareSource(host, {
+  context: Pick<BuildContext, "host" | "branch" | "detail" | "output">,
+): Promise<Source> {
+  return await prepareSource(context.host, {
     name: topology.container,
     repo: app.repo,
     // Already absolute when the CLI loaded the config, because a path is read
@@ -80,9 +78,23 @@ export async function build(
     include: app.include,
     ref: refOf(app, context.branch),
     output: context.output,
-    submodules: spec.submodules,
-    detail,
+    submodules: app.build.submodules,
+    detail: context.detail,
   });
+}
+
+export async function build(
+  app: AppSpec,
+  topology: AppTopology,
+  context: BuildContext,
+  // Already checked out by a step of its own. Absent, the build fetches it
+  checkedOut?: Source,
+): Promise<BuildResult> {
+  const { host, docker } = context;
+  const spec = app.build;
+  const detail = context.detail ?? (() => {});
+
+  const source = checkedOut ?? (await sourceOf(app, topology, { ...context, detail }));
 
   const release = source.release;
   const fingerprint = fingerprintOf(app, context, release);

@@ -233,6 +233,12 @@ class DockerContainer {
     return RUNNING.has(await this.status(name));
   }
 
+  // Both streams, since a process that dies as it starts says why on stderr, and
+  // stamped so a line can be set against when the health check gave up
+  async logs(name: string, tail: number) {
+    return await this.docker.run(`container logs --tail ${tail} --timestamps ${name} 2>&1`);
+  }
+
   async start(name: string) {
     if (!(await this.exists(name))) {
       throw new Error(`Cannot start ${name}, it does not exist`);

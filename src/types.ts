@@ -282,4 +282,13 @@ export type Deployment = {
   // refs, and whatever else brings steps of its own. Nothing a plugin carries
   // happens until it is listed here, redkite's own vault included
   plugins?: Plugin[];
+  // How redkite itself behaves, rather than anything it deploys
+  options?: DeploymentOptions;
+};
+
+export type DeploymentOptions = {
+  // A run that fails writes everything it said to
+  // /tmp/<project>/<environment>/crash-<time>/: the run's own log, and one file
+  // per step with its output in full. On unless this says false
+  crashLog?: boolean;
 };

@@ -357,6 +357,21 @@ failure says which kind was missing: *"acme/backend has no tag v9"*.
 An environment can only say `branch`. A tag or a commit is a claim about one
 repository, and an environment spans every app in the deployment.
 
+Each app is cloned as a step of its own, ahead of its build. It says the
+repository and the branch, tag or commit as it starts, and says them again with
+the commit it landed on when it ends, so the row keeps them after the step's
+progress has moved on:
+
+```
+✔ Cloning backend: git@github.com:acme/backend.git, branch staging at 64ae9f1 (2s)
+✔ Building backend: 64ae9f1 (1m12s)
+```
+
+A repository that cannot be reached, or a branch it does not have, fails that
+step rather than the build, and gets a file of its own in the crash log. An app
+built from a directory is read where it is rather than cloned, so it has no
+such step.
+
 ### Building from a directory
 
 An app names either a repository to clone or a directory already on this
@@ -1172,6 +1187,58 @@ the CPU and disk it is using. Nothing will clean up after it but you.
 
 The sixth press leaves.
 
+### When a run fails
+
+A run that throws, or a deploy that reverts, leaves everything it said on disk:
+
+```
+/tmp/<project>/<environment>/crash-2026-09-14T10-22-05.123Z/
+  run.log
+  01-reading-the-bitwarden-vault.log
+  02-setup.log
+  03-building-frontend.log
+  04-building-backend.log
+  05-swap-before-migrate-backend.log
+```
+
+`run.log` holds what happened around the steps: the command, the version, the
+whole error chain with every stack in it, an index of the step files with how
+each ended, and every message and host command in the order they came. Host
+commands are kept whether or not `--verbose` showed them, since they are what a
+crash log is read for.
+
+Each step is a file of its own, numbered in the order the steps started, with
+what it was doing as it went and every line its commands printed. Every app
+builds as its own step, so one app's output is never read through another's.
+The view keeps only each step's tail and the terminal gets only the end of the
+error; these keep all of it. Every line is stamped from the start of the run,
+the same clock in every file.
+
+A health check that fails adds a step for each app, `Logs of <app>`, holding the
+last 200 lines its new container printed, both streams, with docker's own
+timestamps. They are read before the revert, because the revert gives the live
+name back to the previous release and anything asked after it would be that
+release's output. Every new container is read rather than only the one that
+failed, since a backend that never came up is often explained by what another
+app says it could not reach. The one that failed its check is marked failed,
+which puts its last lines on the screen when the run ends, and each has a file
+of its own here.
+
+The path is `/tmp` itself rather than `TMPDIR`, so it is where a person is told
+to look. The directories are `700` and the files `600`, because `/tmp` is shared
+and a build's output can say more than it meant to. A run somebody stopped is
+not a crash and writes nothing.
+
+A deployment that wants none of it says so:
+
+```ts
+export default defineDeployment({
+  project: "acme",
+  options: { crashLog: false },
+  // ...
+});
+```
+
 ## GitHub Actions
 
 There is a composite action in this repository. `verify` on a pull request,
@@ -1271,7 +1338,8 @@ with the agent forwarded.
 6. **Swap.** The running container moves to the retired address without being
    stopped and is renamed, and only then does the live address belong to the new
    one. Nginx keeps the retired container as a backup upstream.
-7. **Check.** Each app is probed on itself. One failure reverts all of them.
+7. **Check.** Each app is probed on itself. One failure reverts all of them,
+   after writing out the last 200 lines every new container printed.
 8. **Cleanup.** Retired containers removed, superseded images reclaimed.
 
 A `verify` run walks the same list without steps 5 to 7. In their place it runs
