@@ -1,4 +1,4 @@
-import { silent, type Log } from "./log.js";
+import { silent, type Task } from "./log.js";
 import type { HealthSpec } from "./types.js";
 
 const RETRIES = 10;
@@ -16,7 +16,9 @@ export type Probe = (
 export type HealthDeps = {
   probe: Probe;
   sleep: (ms: number) => Promise<void>;
-  log?: Log;
+  // The step the check reports on. Every attempt is said on it, so a check that
+  // gave up shows what the container answered each time rather than only that
+  task?: Task;
 };
 
 // One loop for every app. The two copies it replaces had already drifted: the
@@ -30,21 +32,27 @@ export async function healthcheck(
 ): Promise<boolean> {
   const retries = spec.retries ?? RETRIES;
   const ceiling = spec.intervalMs ?? INTERVAL_MS;
-  const log = deps.log ?? silent;
+  const task = deps.task ?? silent.step("");
   const delay = spec.delayMs ?? DELAY_MS;
+  const url = `localhost:${port}${spec.path}`;
 
+  task.detail(`probing ${container} at ${url}`);
   if (delay > 0) await deps.sleep(delay);
 
   let backoff = FIRST_BACKOFF_MS;
 
   for (let attempt = 1; attempt <= retries; attempt += 1) {
-    const url = `localhost:${port}${spec.path}`;
     const { code, output } = await deps.probe(container, url);
+    const said = (message: string) => task.detail(`attempt ${attempt} of ${retries}: ${message}`);
 
-    if (code === 0 && passes(spec, output, log, container)) {
-      log.done(`${container} is healthy`);
+    if (code === 0 && passes(spec, output, said)) {
+      task.done(`${container} healthy after ${attempt} ${attempt === 1 ? "attempt" : "attempts"}`);
       return true;
     }
+
+    // Nothing answered at all, which is a container still starting or one that
+    // is listening somewhere other than where the check asks
+    if (code !== 0) said(`no answer on ${url}`);
 
     if (attempt === retries) break;
 
@@ -54,30 +62,29 @@ export async function healthcheck(
     backoff = Math.min(backoff * 2, ceiling);
   }
 
-  log.fail(`${container} failed its health check after ${retries} attempts`);
+  task.fail(`${container} unhealthy after ${retries} attempts`);
   return false;
 }
 
 // A body that parses but fails the predicate is a retry, not a verdict. The
 // container may still be warming up, and the caller has a retry budget for it
-function passes(
-  spec: HealthSpec,
-  output: string,
-  log: Log,
-  container: string,
-) {
+function passes(spec: HealthSpec, output: string, said: (message: string) => void) {
   let body: unknown;
 
   try {
     body = JSON.parse(output);
   } catch {
-    log.warn(`${container} returned a body that is not JSON: ${output}`);
+    said(`answered with something that is not JSON: ${output}`);
     return false;
   }
 
-  if (typeof body !== "object" || body === null) return false;
+  if (typeof body !== "object" || body === null) {
+    said(`answered with JSON that is not an object: ${output}`);
+    return false;
+  }
+
   if (spec.expect(body as Record<string, unknown>)) return true;
 
-  log.warn(`${container} is not healthy yet: ${output}`);
+  said(`not healthy yet: ${output}`);
   return false;
 }

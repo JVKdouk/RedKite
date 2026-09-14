@@ -14,7 +14,7 @@ import { sshHost } from "../sshHost.js";
 import { topologyFor, type Topology } from "../topology.js";
 import type { Deployment, DeployHost } from "../types.js";
 
-import { needsAgent, requireAgent } from "./agent.js";
+import { AGENT_STARTED, needsAgent, requireAgent } from "./agent.js";
 import { loadConfig, projectRoot } from "./config.js";
 import { loadDotenv } from "./dotenv.js";
 import { dumpCrash, recording } from "./crash.js";
@@ -181,7 +181,9 @@ async function recover(
   const deployHost = environmentOf(config, environment)?.host;
 
   const say = (message = "") => process.stdout.write(`${message}\n`);
-  if (needsAgent(config, environment)) requireAgent(say);
+  // Printed rather than drawn: a recovery has no view, and its connection
+  // step is silent
+  if (needsAgent(config, environment) && requireAgent().started) say(AGENT_STARTED);
 
   const host = await hostFor(deployHost, silent);
 
@@ -485,14 +487,26 @@ export function buildingHere(config: Deployment, environment: string): Deploymen
 
 // Without a bastion the containers are on this machine, and every command the
 // deploy issues is one this process can run itself
-async function hostFor(host: DeployHost | undefined, log: Log, signal?: AbortSignal) {
-  if (!host?.bastion) return await localHost({ signal });
+async function hostFor(
+  host: DeployHost | undefined,
+  log: Log,
+  signal?: AbortSignal,
+  startedAgent = false,
+) {
+  if (!host?.bastion) {
+    // No connection to say it in. A run on this machine that clones over ssh
+    // still started one, and that is still worth knowing
+    if (startedAgent) log.warn(AGENT_STARTED);
+    return await localHost({ signal });
+  }
 
   const task = log.step(`Opening a connection to ${host.bastion}`);
+  if (startedAgent) task.detail(AGENT_STARTED);
 
   try {
     const opened = await sshHost(host.bastion, { signal, hostKeys: host.hostKeys });
-    task.done();
+    // Kept on the row once the connection is open, not only while it opens
+    task.done(startedAgent ? AGENT_STARTED : undefined);
     return opened;
   } catch (error) {
     task.fail(`Could not reach ${host.bastion}`);
@@ -561,9 +575,7 @@ async function run(
   // The host clones the repositories over this, so it has to exist before the
   // connection that forwards it is opened. Before the view too: ssh-add asks
   // for a passphrase on the terminal, and by then the view owns it
-  if (needsAgent(config, environment)) {
-    requireAgent((message) => process.stderr.write(`${message}\n`));
-  }
+  const agent = needsAgent(config, environment) ? requireAgent() : undefined;
 
   // Whatever is in flight is killed, the pipeline unwinds through its own
   // failure path, and the finally below removes the scratch directory
@@ -629,7 +641,7 @@ async function run(
 
   try {
     const meter = measured(
-      await hostFor(deployHost, log, stopping.signal),
+      await hostFor(deployHost, log, stopping.signal, agent?.started),
       options.verbose ? log : recorder.command,
     );
 

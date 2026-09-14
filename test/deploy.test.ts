@@ -6,6 +6,7 @@ import type { Deployment, Log } from "../src/index.js";
 import {
   bitwarden,
   deploy,
+  tag,
   fingerprintOf,
   migrate,
   plannedServices,
@@ -572,7 +573,7 @@ describe("cloning each app", () => {
     const { events } = await deployWith();
 
     assert.ok(
-      events.includes("Cloning backend · git@github.com:acme/backend.git, branch staging"),
+      events.includes(`Cloning backend · ${tag("GH")} acme/backend staging`),
       events.filter((event) => event.startsWith("Cloning backend")).join("\n"),
     );
   });
@@ -581,14 +582,14 @@ describe("cloning each app", () => {
     const { events } = await deployWith();
 
     assert.ok(
-      events.includes("Cloning backend done git@github.com:acme/backend.git, branch staging at abc1234"),
+      events.includes(`Cloning backend done ${tag("GH")} acme/backend staging -> abc1234`),
     );
   });
 
   it("names a pinned tag rather than the environment's branch", async () => {
     const { events } = await deployWith({ config: withBackend((app) => ({ ...app, tag: "v1.2.3" })) });
 
-    assert.ok(events.includes("Cloning backend · git@github.com:acme/backend.git, tag v1.2.3"));
+    assert.ok(events.includes(`Cloning backend · ${tag("GH")} acme/backend tag v1.2.3`));
   });
 
   it("fails the clone, not the build, when the repository cannot be fetched", async () => {
@@ -598,7 +599,7 @@ describe("cloning each app", () => {
 
     assert.ok(error, "the run stops");
     assert.ok(
-      events.includes("Cloning backend failed backend could not clone git@github.com:acme/backend.git, branch staging"),
+      events.includes(`Cloning backend failed backend could not clone ${tag("GH")} acme/backend staging`),
     );
     assert.ok(!events.includes("step Building backend"), "and never starts building it");
   });
@@ -651,6 +652,20 @@ describe("when a health check fails", () => {
 
     return { result, events, host };
   }
+
+  it("checks each app on a step of its own, not beside the swap", async () => {
+    const { events } = await failing();
+
+    assert.ok(events.includes("step Health check of backend"));
+    assert.ok(events.includes("step Health check of frontend"));
+    assert.ok(events.includes(`Health check of backend failed ${back.container} unhealthy after 10 attempts`));
+    assert.ok(events.includes(`Health check of frontend done ${front.container} healthy after 1 attempt`));
+
+    assert.ok(
+      !events.some((event) => /^(done|warn|fail) /.test(event) && /healthy after|not healthy yet/.test(event)),
+      "nothing about a single check is said outside its step",
+    );
+  });
 
   it("writes out what every new container printed", async () => {
     const { events } = await failing();

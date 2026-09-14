@@ -1,3 +1,5 @@
+import { TAGS, untagged } from "../log.js";
+
 // The deploy as a list of collapsibles. A step is a title and the lines it
 // produced; the one running is open, the ones finished are shut, and the person
 // watching moves between them. The model and the renderer are pure, so what the
@@ -199,12 +201,51 @@ const RUNNING = 93;
 const DONE = 32;
 const FAILED = 91;
 const WARN = 33;
+// A tag is a blue label with rounded ends: the ends in blue on the terminal's own
+// ground, and the word white on blue between them
+const TAG_EDGE = 34;
+const TAG_BODY = "97;44";
 
-type Piece = { text: string; colour?: number };
+type Colour = number | string;
 
-function paint(text: string, colour: number | undefined, on: boolean) {
+type Piece = { text: string; colour?: Colour };
+
+function paint(text: string, colour: Colour | undefined, on: boolean) {
   if (!on || colour === undefined || text === "") return text;
   return `\u001b[${colour}m${text}\u001b[0m`;
+}
+
+// Text that may carry a tag, as pieces, so the row is measured before any escape
+// is added. The rounded ends are a column each, the same as the brackets drawn
+// in their place without colour, so a row is the same width either way
+function tagged(text: string, colour: Colour | undefined, on: boolean): Piece[] {
+  if (!on) return [{ text: untagged(text), colour }];
+
+  const pieces: Piece[] = [];
+  let at = 0;
+
+  for (const match of text.matchAll(TAGS)) {
+    if (match.index > at) pieces.push({ text: text.slice(at, match.index), colour });
+
+    pieces.push(
+      { text: "\u25d6", colour: TAG_EDGE },
+      { text: match[1] ?? "", colour: TAG_BODY },
+      { text: "\u25d7", colour: TAG_EDGE },
+    );
+
+    at = match.index + match[0].length;
+  }
+
+  if (at < text.length) pieces.push({ text: text.slice(at), colour });
+  return pieces;
+}
+
+// For what is written as a whole line rather than drawn into a row: the summary
+// left on the screen, and the plain log. The line's own colour resumes after
+export function paintTags(text: string, on: boolean, colour?: Colour) {
+  return tagged(text, colour, on)
+    .map((piece) => paint(piece.text, piece.colour, on))
+    .join("");
 }
 
 function widthOf(pieces: Piece[]) {
@@ -362,7 +403,7 @@ function said(model: Model, message: Message, colour: boolean) {
     [
       { text: gutter(model, message.at), colour: DIM },
       { text: "   " },
-      { text: message.text, colour: WARN },
+      ...tagged(message.text, WARN, colour),
     ],
     Math.max(24, model.columns),
     colour,
@@ -485,7 +526,7 @@ function title(model: Model, step: Step, index: number, colour: boolean) {
     { text: glyph, colour: stateColour(step) },
     { text: " " },
     { text: step.label, colour: labelColour(step, selected) },
-    { text: said, colour: DIM },
+    ...tagged(said, DIM, colour),
     { text: quiet(model, step), colour: WARN },
   ];
 

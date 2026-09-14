@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import config from "./deployment.js";
-import { healthcheck, type HealthDeps } from "../src/index.js";
+import { healthcheck, type HealthDeps, type Task } from "../src/index.js";
 
 const backend = config.apps.find((app) => app.name === "backend")!;
 const frontend = config.apps.find((app) => app.name === "frontend")!;
@@ -123,5 +123,63 @@ describe("health loop", () => {
       await healthcheck("backend", 3001, { ...backend.health, delayMs: 0, retries: 1 }, other),
       false,
     );
+  });
+});
+
+// A check that gave up is read for what the container said each time, so every
+// attempt lands on the step rather than only the verdict
+describe("what a health check says on its step", () => {
+  function reported() {
+    const said: string[] = [];
+
+    const task = {
+      detail: (message: string) => {
+        said.push(`· ${message}`);
+      },
+      line: (message: string) => {
+        said.push(`| ${message}`);
+      },
+      done: (message?: string) => {
+        said.push(`done ${message ?? ""}`);
+      },
+      fail: (message: string) => {
+        said.push(`failed ${message}`);
+      },
+    } satisfies Task;
+
+    return { task, said };
+  }
+
+  it("says every attempt that did not pass, with what came back", async () => {
+    const { deps } = harness([refused, garbage, degraded, up]);
+    const { task, said } = reported();
+
+    await healthcheck("backend", 3001, { ...backend.health, delayMs: 0 }, { ...deps, task });
+
+    assert.deepEqual(said, [
+      "· probing backend at localhost:3001/health",
+      "· attempt 1 of 10: no answer on localhost:3001/health",
+      "· attempt 2 of 10: answered with something that is not JSON: <html>502 Bad Gateway</html>",
+      `· attempt 3 of 10: not healthy yet: ${degraded.output}`,
+      "done backend healthy after 4 attempts",
+    ]);
+  });
+
+  it("ends the step failed, saying how many attempts it made", async () => {
+    const { deps } = harness([garbage]);
+    const { task, said } = reported();
+
+    await healthcheck("frontend", 3000, { ...frontend.health, delayMs: 0, retries: 2 }, { ...deps, task });
+
+    assert.equal(said.at(-1), "failed frontend unhealthy after 2 attempts");
+  });
+
+  it("says one attempt, not attempts, when the first answer passes", async () => {
+    const { deps } = harness([up]);
+    const { task, said } = reported();
+
+    await healthcheck("backend", 3001, { ...backend.health, delayMs: 0 }, { ...deps, task });
+
+    assert.equal(said.at(-1), "done backend healthy after 1 attempt");
   });
 });

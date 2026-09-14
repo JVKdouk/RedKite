@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { prepareSource, type Host, type Result } from "../src/index.js";
+import {
+  describeRef,
+  describeRepo,
+  prepareSource,
+  tag,
+  type Host,
+  type Result,
+} from "../src/index.js";
 
 // Getting the repository onto the machine that builds it. Every command runs
 // there, so this asserts on the script rather than on a checkout.
@@ -276,5 +283,32 @@ describe("what a clone is resolved against", () => {
       () => prepareSource(host, at({ kind: "tag", name: "v9" })),
       /has no tag v9/,
     );
+  });
+});
+
+// What a person reads on a clone step. The host is a tag where it is a known
+// one, and the .git on the end says nothing anybody needs
+describe("naming a repository on screen", () => {
+  it("tags a GitHub repository and drops the .git", () => {
+    assert.equal(describeRepo("git@github.com:acme/backend.git"), `${tag("GH")} acme/backend`);
+  });
+
+  it("reads the https and ssh:// spellings of it the same way", () => {
+    assert.equal(describeRepo("https://github.com/acme/backend.git"), `${tag("GH")} acme/backend`);
+    assert.equal(describeRepo("ssh://git@github.com/acme/backend"), `${tag("GH")} acme/backend`);
+  });
+
+  it("names a host it has no tag for", () => {
+    assert.equal(describeRepo("git@gitlab.com:acme/backend.git"), "gitlab.com:acme/backend");
+  });
+
+  it("leaves a directory a path", () => {
+    assert.equal(describeRepo("/srv/git/backend.git"), "/srv/git/backend");
+  });
+
+  it("calls a branch by its name, and says when a ref is a pin", () => {
+    assert.equal(describeRef({ kind: "branch", name: "master" }), "master");
+    assert.equal(describeRef({ kind: "tag", name: "v1.2.3" }), "tag v1.2.3");
+    assert.equal(describeRef({ kind: "commit", name: "9f2b4c1" }), "commit 9f2b4c1");
   });
 });

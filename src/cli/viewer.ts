@@ -5,6 +5,7 @@ import {
   elapsed,
   emptyModel,
   keysOf,
+  paintTags,
   render,
   type Model,
   type Step,
@@ -113,7 +114,7 @@ export function createViewer(
     stream.write(ALTERNATE_OFF);
     // The alternate screen takes every frame with it, so the run has to be
     // written again on the screen the person keeps
-    for (const line of summary(model)) stream.write(`${line}\n`);
+    for (const line of summary(model, colour)) stream.write(`${line}\n`);
   };
 
   // What a second press means is not the view's to decide: the same key
@@ -191,18 +192,18 @@ export function createViewer(
 
 // One line per step and whatever was said outside them, which is the record a
 // person scrolls back to after the deploy is over
-function summary(model: Model): string[] {
+function summary(model: Model, colour: boolean): string[] {
   const rows = model.steps.map((step) => {
     const glyph = step.state === "done" ? "✔" : step.state === "failed" ? "✘" : "·";
     const said = step.note ? `: ${step.note}` : "";
     const took = elapsed(step.ended ?? model.now, step.started);
 
-    return `${glyph} ${step.label}${said} (${took})`;
+    return paintTags(`${glyph} ${step.label}${said} (${took})`, colour);
   });
 
   return [
     ...rows,
-    ...model.messages.map((message) => message.text),
+    ...model.messages.map((message) => paintTags(message.text, colour)),
     ...whatFailed(model),
   ];
 }

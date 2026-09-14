@@ -1,4 +1,5 @@
 import type { Host } from "./host.js";
+import { tag } from "./log.js";
 
 // Getting the source onto the machine that builds it. A repository the host
 // clones for itself over the forwarded agent, so no tree crosses the wire: a
@@ -44,6 +45,29 @@ const REVISION: Record<RefKind, (name: string) => string> = {
   tag: (name) => `refs/tags/${name}^{commit}`,
   commit: (name) => `${name}^{commit}`,
 };
+
+// Hosts common enough to be worth a tag in place of their name
+const HOSTS: Record<string, string> = { "github.com": "GH" };
+
+// user@host:path, or scheme://user@host/path, with the .git every clone URL ends
+// in. Anything that is not one of those, a directory for instance, has no host
+const REMOTE = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^@/]+@)?([^:/]+)[:/](.+?)(?:\.git)?\/?$/;
+
+// How a repository is named on screen: the host as a tag where it is a known
+// one, and the path without the .git that says nothing a person needs
+export function describeRepo(repo: string) {
+  const match = REMOTE.exec(repo);
+  if (!match?.[1] || !match[2]) return repo.replace(/\.git$/, "");
+
+  const known = HOSTS[match[1]];
+  return known ? `${tag(known)} ${match[2]}` : `${match[1]}:${match[2]}`;
+}
+
+// A branch is what is tracked nearly always, so it goes by its name alone. A tag
+// or a commit is a pin, and says which kind it is
+export function describeRef(ref: Ref) {
+  return ref.kind === "branch" ? ref.name : `${ref.kind} ${ref.name}`;
+}
 
 // accept-new rather than no: a host key that changes is still worth refusing
 const GIT_SSH = "ssh -o StrictHostKeyChecking=accept-new";

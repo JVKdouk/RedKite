@@ -358,14 +358,19 @@ An environment can only say `branch`. A tag or a commit is a claim about one
 repository, and an environment spans every app in the deployment.
 
 Each app is cloned as a step of its own, ahead of its build. It says the
-repository and the branch, tag or commit as it starts, and says them again with
-the commit it landed on when it ends, so the row keeps them after the step's
+repository and what it is fetching as it starts, and says them again with the
+commit it landed on when it ends, so the row keeps them after the step's
 progress has moved on:
 
 ```
-✔ Cloning backend: git@github.com:acme/backend.git, branch staging at 64ae9f1 (2s)
+✔ Cloning backend: [GH] acme/backend staging -> 64ae9f1 (2s)
 ✔ Building backend: 64ae9f1 (1m12s)
 ```
+
+A repository on GitHub is named by its path, with a blue `GH` label with rounded
+ends in place of the host; anywhere without colour, a CI log or a crash log, the
+label is written `[GH]`. The `.git` is dropped. A branch goes by its name alone,
+and a pin says which kind it is: `tag v1.2.3`, `commit 9f2b4c1`.
 
 A repository that cannot be reached, or a branch it does not have, fails that
 step rather than the build, and gets a file of its own in the crash log. An app
@@ -1338,8 +1343,10 @@ with the agent forwarded.
 6. **Swap.** The running container moves to the retired address without being
    stopped and is renamed, and only then does the live address belong to the new
    one. Nginx keeps the retired container as a backup upstream.
-7. **Check.** Each app is probed on itself. One failure reverts all of them,
-   after writing out the last 200 lines every new container printed.
+7. **Check.** Each app is probed on itself, as a step of its own,
+   `Health check of <app>`, which says what the container answered on every
+   attempt. One failure reverts all of them, after writing out the last 200
+   lines every new container printed.
 8. **Cleanup.** Retired containers removed, superseded images reclaimed.
 
 A `verify` run walks the same list without steps 5 to 7. In their place it runs

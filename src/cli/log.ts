@@ -1,6 +1,6 @@
 import type { Task } from "../log.js";
 
-import { elapsed as took } from "./screen.js";
+import { paintTags, elapsed as took } from "./screen.js";
 import { createViewer, type Viewer } from "./viewer.js";
 
 // What a deploy prints. The engine's own trace is a build graph with span ids
@@ -48,7 +48,8 @@ function plainLog(lines: boolean) {
   const write = (stream: NodeJS.WriteStream, message: string, colour?: number) => {
     const painted = colours(stream);
     const stamp = painted ? paint(elapsed(), STAMP) : elapsed();
-    const body = painted && colour ? paint(message, colour) : message;
+    // A tag is drawn where there is colour and bracketed where there is not
+    const body = paintTags(message, painted, colour);
     const line = `${stamp} ${body}\n`;
 
     // Both streams share one terminal, so the block has to come down for a

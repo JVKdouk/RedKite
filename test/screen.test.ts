@@ -9,10 +9,12 @@ import {
   HELP,
   keyOf,
   keysOf,
+  paintTags,
   render,
   type Model,
   type Step,
 } from "../src/cli/screen.js";
+import { tag } from "../src/log.js";
 
 // The view is a pure function of the model, which is the only reason any of
 // this can be asserted on rather than watched.
@@ -681,6 +683,48 @@ describe("wrapping a long line", () => {
     const one = apply(apply(model([step("build")]), "wrap"), "wrap");
 
     assert.equal(one.wrapped, false);
+  });
+});
+
+// A label such as the host a repository lives on. Drawn where there is colour,
+// and still readable where there is not
+describe("a tag on a row", () => {
+  const ESCAPE = /\u001b\[[0-9;]*m/g;
+  const said = `${tag("GH")} acme/backend staging`;
+
+  const row = (colour: boolean) =>
+    render(model([step("Cloning backend", { detail: said })], { columns: 80 }), colour).find(
+      (line) => line.includes("Cloning backend"),
+    ) ?? "";
+
+  it("is a blue label with rounded ends where there is colour", () => {
+    assert.ok(
+      row(true).includes("\u001b[34m\u25d6\u001b[0m\u001b[97;44mGH\u001b[0m\u001b[34m\u25d7\u001b[0m"),
+      JSON.stringify(row(true)),
+    );
+  });
+
+  it("is the bracketed word where there is none", () => {
+    assert.match(row(false), /Cloning backend {2}\[GH\] acme\/backend staging/);
+    assert.ok(!row(false).includes("\uE000"));
+  });
+
+  // Measured before the escapes go on, and the rounded ends are a column each,
+  // so the row fills the terminal exactly as the bracketed one does
+  it("leaves the row as wide as the terminal, drawn or not", () => {
+    assert.equal(row(true).replace(ESCAPE, "").length, 80);
+    assert.equal(row(false).length, 80);
+  });
+
+  it("goes back to the line's own colour after the label", () => {
+    const painted = paintTags(`done ${tag("GH")} acme`, true, 32);
+
+    assert.ok(painted.startsWith("\u001b[32mdone \u001b[0m"));
+    assert.ok(painted.endsWith("\u001b[32m acme\u001b[0m"));
+  });
+
+  it("writes a whole line plainly when colour is off", () => {
+    assert.equal(paintTags(`done ${tag("GH")} acme`, false, 32), "done [GH] acme");
   });
 });
 

@@ -26,7 +26,7 @@ import { pluginSteps } from "./plugin.js";
 import { readEnv, readRef, type SecretStores } from "./secrets/refs.js";
 import { ensureService } from "./services/ensure.js";
 import { plannedServices } from "./services/planned.js";
-import type { Source } from "./source.js";
+import { describeRef, describeRepo, type Source } from "./source.js";
 import { topologyFor, type AppTopology, type Topology } from "./topology.js";
 import type { AppSpec, Deployment } from "./types.js";
 
@@ -305,13 +305,16 @@ async function checkAll(context: Context, health: Omit<HealthDeps, "probe">) {
   const results = await Promise.all(
     context.config.apps.map(async (app) => {
       const target = appOf(topology, app.name);
+
+      // A step of its own for each app, rather than lines said beside the swap:
+      // every attempt lands on it, and a crash log gives it a file
       const deps: HealthDeps = {
         ...health,
         probe: async (container, url) => {
           const result = await docker.run(`exec ${container} curl -s ${url}`);
           return { code: result.code, output: result.stdout };
         },
-        log,
+        task: log.step(`Health check of ${app.name}`),
       };
 
       const healthy = await healthcheck(target.container, target.port, app.health, deps);
@@ -444,7 +447,7 @@ async function clone(
   if (!app.repo) return undefined;
 
   const ref = refOf(app, branch);
-  const what = `${app.repo}, ${ref.kind} ${ref.name}`;
+  const what = `${describeRepo(app.repo)} ${describeRef(ref)}`;
   const task = log.step(`Cloning ${app.name}`);
 
   try {
@@ -457,7 +460,7 @@ async function clone(
     });
 
     // Said again at the end, where it outlasts the details that replaced it
-    task.done(`${what} at ${source.release.slice(0, 7)}`);
+    task.done(`${what} -> ${source.release.slice(0, 7)}`);
     return source;
   } catch (error) {
     task.fail(`${app.name} could not clone ${what}`);

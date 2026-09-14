@@ -687,3 +687,39 @@ timestamps dropped, and a failed read thrown instead of reported.
 
 Not run live, for the same reason as the clone step: there is no deployment here
 to fail a health check against.
+
+## Tags, shorter clone lines, and steps for the agent and the health check
+
+- [x] The message about starting an SSH agent is said in the step that opens the
+      connection, on its row once it is open. `requireAgent` still runs before
+      the view, since ssh-add may ask for a passphrase, and answers with whether
+      it started one rather than printing it. A run on this machine has no such
+      step and warns in the view instead; rollback and down print it
+- [x] `tag()` in the core log marks a short label with private-use characters.
+      The view draws it as a blue label with rounded ends, measured before any
+      escape; the summary and the plain log paint it the same way; anything
+      without colour, and every crash file, writes `[GH]`
+- [x] A clone names a GitHub repository as the GH tag and its path, without the
+      .git. A host with no tag is `host:path`, a directory stays a path
+- [x] A branch goes by its name alone, and the step ends `master -> <hash>`. A
+      tag or a commit still says which kind of pin it is
+- [x] Health checks are a `Health check of <app>` step each rather than lines
+      said beside the swap. Every attempt that did not pass is said on it with
+      what came back, including no answer at all, which used to say nothing
+- [x] `HealthDeps` takes the task to report on instead of a log
+
+18 tests. Each change reverted to check a test fails: the .git kept, GH written
+as plain text, a branch still called branch, the commit not written as
+`-> <hash>`, tags never drawn, crash files keeping the marker, the line's colour
+not resumed after a tag, attempts said without which attempt, and no health step.
+
+Not covered by a test: the agent message, since `hostFor` is not exported and
+starting an agent for real runs ssh-add on the machine. The rounded ends are
+assumed to be one column wide, which holds in common monospace fonts but is not
+something a test here can measure.
+
+A first run of those probes restored nothing: zsh does not split an unquoted
+variable into words, so the backups were never taken and the mutations stacked.
+They were reversed one by one, each matched exactly once, and the suite and the
+typecheck came back to what they were before the run. The probes were then run
+again under bash, restoring and comparing byte for byte after each.

@@ -21,14 +21,14 @@ function overSsh(repo: string) {
   return !/^(https?|git|file):\/\//.test(repo);
 }
 
-// A plain writer rather than a Log, because this runs before the view opens:
-// ssh-add may ask for a passphrase, and it cannot ask through a screen
-// something else is drawing
-export function requireAgent(warn: (message: string) => void) {
-  const existing = process.env["SSH_AUTH_SOCK"];
-  if (existing) return existing;
+export const AGENT_STARTED = "no SSH agent was running, so one was started";
 
-  warn("No SSH agent, starting one");
+// Runs before the view opens, because ssh-add may ask for a passphrase and it
+// cannot ask through a screen something else is drawing. Whether one was started
+// is answered rather than said, so the step that opens the connection says it
+export function requireAgent() {
+  const existing = process.env["SSH_AUTH_SOCK"];
+  if (existing) return { socket: existing, started: false };
 
   const output = execFileSync("ssh-agent", ["-s"], { encoding: "utf8" });
   const socket = output.match(/SSH_AUTH_SOCK=([^;]+);/)?.[1];
@@ -51,5 +51,5 @@ export function requireAgent(warn: (message: string) => void) {
     );
   }
 
-  return socket;
+  return { socket, started: true };
 }

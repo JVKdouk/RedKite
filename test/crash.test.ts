@@ -15,6 +15,7 @@ import {
   type Crash,
 } from "../src/cli/crash.js";
 import type { Viewer } from "../src/cli/viewer.js";
+import { tag } from "../src/log.js";
 
 // The view trims each step to its tail and the alternate screen takes the rest,
 // so this is the only whole record of a run that failed.
@@ -217,6 +218,16 @@ describe("what a crash log holds", () => {
     recorder.log.step("swap:before:migrate-backend").fail("backend failed to migrate");
 
     assert.ok("01-swap-before-migrate-backend.log" in crashFiles(recorder.transcript, crash()));
+  });
+
+  it("writes a tag as the bracketed word, since a file cannot draw one", () => {
+    const recorder = recording(viewer().log);
+    recorder.log.step("Cloning backend").done(`${tag("GH")} acme/backend staging -> abc1234`);
+
+    const file = fileOf(crashFiles(recorder.transcript, crash()), "01-cloning-backend.log");
+
+    assert.match(file, /^state {8}done: \[GH\] acme\/backend staging -> abc1234$/m);
+    assert.ok(!file.includes("\uE000"));
   });
 
   it("says a step that never finished was still running", () => {

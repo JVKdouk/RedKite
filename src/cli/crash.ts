@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import type { Task } from "../log.js";
+import { untagged, type Task } from "../log.js";
 import type { Deployment } from "../types.js";
 import { elapsed } from "./screen.js";
 import { causes } from "./log.js";
@@ -259,9 +259,10 @@ function lines(rows: string[]) {
   return `${rows.join("\n")}\n`;
 }
 
-// Continuation lines line up under the text rather than under the timestamp
+// Continuation lines line up under the text rather than under the timestamp. A
+// file cannot draw a tag, so it gets the bracketed word
 function indent(text: string) {
-  return text.replaceAll("\n", "\n              ");
+  return untagged(text).replaceAll("\n", "\n              ");
 }
 
 function slug(text: string) {
