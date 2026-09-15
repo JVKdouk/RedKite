@@ -2,6 +2,7 @@ import type { AppSpec, Deployment, ServiceSpec } from "./types.js";
 
 import { environmentOf } from "./config.js";
 import { mountFor } from "./layout.js";
+import { logMount } from "./services/proxy.js";
 
 // Every name and address the deployment uses, derived from the app list. This
 // is the file that replaces the constants block: nothing is chosen by hand, so
@@ -92,7 +93,9 @@ export function topologyFor(config: Deployment, environment: string): Topology {
       name: "nginx",
       container: `${prefix}-nginx`,
       address: address(NGINX_OCTET),
-      volumes: [],
+      // Only a directory the deployment named. Nothing mounted otherwise, so a
+      // proxy that says nothing about its logs is the container it always was
+      volumes: routerVolumes(config),
     },
     apps,
     services,
@@ -163,6 +166,11 @@ function serviceTopology(
       mountPath,
     })),
   };
+}
+
+function routerVolumes(config: Deployment) {
+  const logs = logMount(config.proxy);
+  return logs ? [logs] : [];
 }
 
 // Nginx resolves upstreams by container name, apps reach services by alias

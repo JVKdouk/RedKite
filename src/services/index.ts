@@ -9,6 +9,9 @@ export function nginx(options: ProxySpec = {}): ProxySpec {
     maxBodySize: options.maxBodySize ?? "1M",
     server: options.server ?? [],
     location: options.location ?? [],
+    locations: options.locations ?? {},
+    // Carried as given: absent and false mean different things
+    logs: options.logs,
   };
 }
 

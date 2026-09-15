@@ -723,3 +723,38 @@ variable into words, so the backups were never taken and the mutations stacked.
 They were reversed one by one, each matched exactly once, and the suite and the
 typecheck came back to what they were before the run. The probes were then run
 again under bash, restoring and comparing byte for byte after each.
+
+## Proxy settings per location, and where nginx logs
+
+- [x] `locations` in `nginx()`, keyed by app name: lines for that app's location
+      alone, after the ones every location gets, so they replace those for that
+      app only. A name that is not one of the apps is refused, naming the ones
+      there are
+- [x] `proxy_pass` in any location line is refused. It is what routes a location
+      to its app, and it was already replaceable without a word
+- [x] `logs: false` turns the access log off and sends errors to /dev/null at
+      emerg, since error_log has no off
+- [x] `logs: {}` states the container's own output, `logs: { directory }` writes
+      `<environment>.access.log` and `<environment>.error.log` into a directory
+      on the deploy host, so two environments on one host can share one.
+      `access: false` turns off only the access log, `errors` sets the level
+- [x] The directory is bind-mounted at /var/log/nginx on the proxy container. It
+      has to be absolute: docker reads anything else as a volume name
+- [x] Logging goes at the top of the server block, so a hand-written `access_log`
+      in `server` still replaces it, and one app's `locations` can quiet its route
+- [x] A deployment that sets none of it renders the config it did before and
+      mounts nothing, so its proxy is not recreated
+- [x] `nginx()` carries both through. It rebuilt the spec field by field and
+      would have dropped them
+
+16 tests. Each reverted to check a test fails: per-app lines never applied, the
+every-location lines winning, an unknown name accepted, proxy_pass accepted,
+logging after the hand-written lines, logs false rendering nothing, files not
+named for the environment, the error level or access false ignored, a relative
+directory accepted, the directory never mounted, and nginx() dropping both.
+
+Checked with nginx 1.30.4: three rendered configs (logging off with per-location
+lines, a directory with the access log off and errors at warn, and the container's
+output with per-location lines) pass `nginx -t`, with the upstream hosts pointed
+at loopback and the log directory at a scratch one. Not checked: a real proxy
+container writing into a bind-mounted host directory.

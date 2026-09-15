@@ -1,5 +1,5 @@
 import type { AppTopology, Topology } from "../topology.js";
-import type { Deployment, ProxySpec, ServiceSpec } from "../types.js";
+import type { Deployment, ProxyLogs, ProxySpec, ServiceSpec } from "../types.js";
 
 // The proxy every route is resolved by: what it is, and the configuration it
 // runs. Both halves here, because a deployment does not list this service and
@@ -30,6 +30,9 @@ export const LISTEN_PORT = 3000;
 // container claiming the first one's, so the config surface refuses it
 export const PROXY = "nginx";
 
+// Where nginx writes inside its container. A log directory is mounted here
+export const LOG_DIRECTORY = "/var/log/nginx";
+
 // Not something a deployment lists. Apps carry routes, routes need something
 // to resolve them, and this says what that something is
 export function proxyService(config: Deployment): ServiceSpec {
@@ -41,16 +44,22 @@ export function proxyService(config: Deployment): ServiceSpec {
 }
 
 export function renderProxy(topology: Topology, proxy: ProxySpec = {}) {
+  assertNotDerived(proxy.server ?? []);
+  assertLocations(topology, proxy);
+
   const upstreams = topology.apps.map((app) => upstream(app)).join("\n\n");
   // Longest route first, so "/api/" is not shadowed by the "/" catch-all
   const ordered = [...topology.apps].sort((a, b) => b.route.length - a.route.length);
-  const locations = ordered.map((app) => location(app, proxy.location ?? [])).join("\n\n");
 
-  assertNotDerived(proxy.server ?? []);
+  const locations = ordered
+    .map((app) => location(app, [...(proxy.location ?? []), ...(proxy.locations?.[app.name] ?? [])]))
+    .join("\n\n");
 
+  // Logging leads the lines written by hand, so an access_log there replaces it
   const server = settled([
     `merge_slashes off;`,
     `client_max_body_size ${proxy.maxBodySize ?? "1M"};`,
+    ...logging(proxy.logs, topology.environment),
     ...(proxy.server ?? []),
   ]);
 
@@ -98,6 +107,65 @@ function assertNotDerived(lines: string[]) {
   throw new Error(
     `The proxy's server block says ${listening.trim()}, and the port it listens ` +
       "on inside its container is what publicPort is published onto",
+  );
+}
+
+// Nothing for a deployment that says nothing, so a proxy it already runs is not
+// recreated for a config that means the same. error_log has no off: the
+// quietest it gets is emerg, written nowhere
+function logging(logs: false | ProxyLogs | undefined, environment: string) {
+  if (logs === undefined) return [];
+  if (logs === false) return ["access_log off;", "error_log /dev/null emerg;"];
+
+  // Named for the environment, since two environments on one host may be given
+  // the same directory
+  const access = logs.directory ? `${LOG_DIRECTORY}/${environment}.access.log` : "/dev/stdout";
+  const error = logs.directory ? `${LOG_DIRECTORY}/${environment}.error.log` : "/dev/stderr";
+
+  return [
+    logs.access === false ? "access_log off;" : `access_log ${access};`,
+    `error_log ${error} ${logs.errors ?? "error"};`,
+  ];
+}
+
+// The host directory a deployment's logs land in, mounted where nginx writes.
+// Absolute, because docker reads anything else as the name of a volume and the
+// logs would go somewhere nobody asked for
+export function logMount(proxy: ProxySpec | undefined) {
+  const directory = proxy?.logs ? proxy.logs.directory : undefined;
+  if (directory === undefined) return undefined;
+
+  if (!directory.startsWith("/") || /[:,]/.test(directory)) {
+    throw new Error(
+      `The proxy logs to ${directory}, which has to be an absolute path on the deploy ` +
+        "host with no colon or comma in it: docker reads anything else as a volume name",
+    );
+  }
+
+  return { volume: directory, mountPath: LOG_DIRECTORY };
+}
+
+// An app name nobody has is a typo, and a location it named would otherwise be
+// settings nothing reads. proxy_pass is what routes the location to its app, so
+// replacing it is not a setting but a broken route
+function assertLocations(topology: Topology, proxy: ProxySpec) {
+  const apps = new Set(topology.apps.map((app) => app.name));
+  const unknown = Object.keys(proxy.locations ?? {}).filter((name) => !apps.has(name));
+
+  if (unknown.length > 0) {
+    throw new Error(
+      `The proxy sets locations for ${unknown.join(", ")}, which this deployment has ` +
+        `no app by that name for. Its apps are ${[...apps].join(", ")}`,
+    );
+  }
+
+  const lines = [...(proxy.location ?? []), ...Object.values(proxy.locations ?? {}).flat()];
+  const routing = lines.find((line) => directive(line) === "proxy_pass");
+  if (!routing) return;
+
+  throw new Error(
+    `A proxy location says ${routing.trim()}, and where a location sends a request ` +
+      "is its app's route, which redkite derives",
   );
 }
 

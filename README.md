@@ -571,15 +571,62 @@ proxy: nginx({
 `server` lines go inside the server block above the locations, `location` lines
 inside every location. Both are written as nginx sees them, semicolons and all.
 
+`locations` is for one app's location alone, keyed by the app's name:
+
+```ts
+proxy: nginx({
+  location: ["proxy_buffering off;"],
+  locations: {
+    backend: ["proxy_read_timeout 300s;", "proxy_buffering on;"],
+  },
+}),
+```
+
+Those lines come after the ones every location gets, so `proxy_buffering on;`
+replaces `off` in the backend's location and the frontend's keeps `off`. A name
+that is not one of the deployment's apps is refused, and so is `proxy_pass` in
+any location: where a location sends a request is its app's route.
+
+#### Logging
+
+Without `logs`, nginx logs the way its image does, to the container's own output.
+`logs` says where instead, or that there is nothing to log:
+
+```ts
+proxy: nginx({
+  logs: { directory: "/var/log/acme", errors: "warn" },
+}),
+```
+
+| `logs` | What nginx writes |
+| --- | --- |
+| absent | Whatever the image does, which for `nginx:stable` is `docker logs` |
+| `false` | No access log, and errors nowhere: `error_log` has no off, so they go to `/dev/null` at `emerg` |
+| `{}` | Access and errors on the container's output, stated rather than left to the image |
+| `{ directory }` | Files in that directory on the deploy host |
+
+`directory` is mounted where nginx writes, and each environment writes files of
+its own into it, `staging.access.log` and `staging.error.log`, so two
+environments on one host can share it. It has to be an absolute path: docker
+reads anything else as the name of a volume. `access: false` turns off only the
+access log. `errors` is how severe something has to be to reach the error log,
+`error` unless it says otherwise.
+
+The logging lines go at the top of the server block, so an `access_log` written
+in `server` still replaces them, and an `access_log off;` in one app's
+`locations` quiets just that route. Changing any of it recreates the proxy
+container on the next deploy, since the mount and the config are what it was
+created from.
+
 **A line replaces rather than repeats.** nginx refuses a second
 `proxy_read_timeout` outright instead of letting the later one win, so
 `proxy_read_timeout 300s;` takes the place of the 30s redkite would have set. A
 header keeps its own name as part of that, so `proxy_set_header Host $host;`
 replaces only the Host header and leaves the other three alone.
 
-The upstreams, the location per route, the failover and `listen` stay derived.
-A `listen` in the server block is refused: the published port maps onto the one
-inside the container, so only one side of that may say it.
+The upstreams, the location per route, the failover, `listen` and `proxy_pass`
+stay derived. A `listen` in the server block is refused: the published port maps
+onto the one inside the container, so only one side of that may say it.
 
 ### Services
 

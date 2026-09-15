@@ -92,6 +92,24 @@ export type ProxySpec = {
   // Lines put inside every location, below what redkite sets, so one of these
   // replaces a header rather than being replaced by it
   location?: string[];
+  // Lines for one app's location alone, keyed by the app's name. Below the lines
+  // every location gets, so one of these replaces those for that app only
+  locations?: Record<string, string[]>;
+  // Where the proxy writes what it logs, and whether it logs at all. Absent
+  // leaves it to the image, which writes to the container's own output
+  logs?: false | ProxyLogs;
+};
+
+export type ProxyLogs = {
+  // A directory on the deploy host, mounted where nginx writes its logs. Each
+  // environment writes files of its own into it. Absent keeps them on the
+  // container's output, where docker logs reads them
+  directory?: string;
+  // One line per request. On unless this says false
+  access?: boolean;
+  // How severe something has to be to reach the error log. nginx's own default
+  // is error
+  errors?: "debug" | "info" | "notice" | "warn" | "error" | "crit" | "alert" | "emerg";
 };
 
 export type ServiceSpec = {
