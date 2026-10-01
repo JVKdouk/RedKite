@@ -9,15 +9,12 @@ import {
   HELP,
   keyOf,
   keysOf,
-  paintTags,
   render,
   type Model,
   type Step,
 } from "../src/cli/screen.js";
-import { tag } from "../src/log.js";
 
-// The view is a pure function of the model, which is the only reason any of
-// this can be asserted on rather than watched.
+// The view is a pure function of the model, so it is asserted on not watched
 
 const START = 1_000_000;
 
@@ -30,6 +27,7 @@ function step(label: string, over: Partial<Step> = {}): Step {
     expanded: false,
     held: false,
     offset: 0,
+    depth: 0,
     ...over,
   };
 }
@@ -44,7 +42,7 @@ function model(steps: Step[], over: Partial<Model> = {}): Model {
 }
 
 const rows = (m: Model) => render(m).filter((row) => row.trim() !== "");
-// The frame is padded above, so the first row drawn is the first that is not blank
+// Padded above, so the first row drawn is the first that has content
 const top = (drawn: string[]) => drawn.find((row) => row.trim() !== "") ?? "";
 const at = (m: Model, needle: string) => render(m).findIndex((row) => row.includes(needle));
 
@@ -60,8 +58,7 @@ describe("reading the keys", () => {
     assert.equal(keyOf(""), "quit");
   });
 
-  // Two keys pressed quickly arrive as one read, and taking the chunk whole
-  // matched neither of them
+  // Two keys arrive as one read, and taking the chunk whole matched neither
   it("reads every key in one chunk", () => {
     assert.deepEqual(keysOf("\u001b[A\r"), ["up", "toggle"]);
     assert.deepEqual(keysOf("\u001b[A\u001b[A\u001b[A"), ["up", "up", "up"]);
@@ -72,8 +69,7 @@ describe("reading the keys", () => {
     assert.deepEqual(keysOf("\u001b[Cz+"), ["expand"]);
   });
 
-  // Pressing quit twice quickly is how a stop is escalated, and both presses
-  // arrive in one read
+  // Quit twice escalates a stop, and both can arrive in one read
   it("reads a second quit in the same read", () => {
     assert.deepEqual(keysOf("qq"), ["quit", "quit"]);
     assert.deepEqual(keysOf("\u0003\u0003\u0003"), ["quit", "quit", "quit"]);
@@ -105,7 +101,7 @@ describe("moving through the steps", () => {
     assert.equal(apply(one, "up").cursor, 0);
   });
 
-  // A collapsed step has no window to scroll, so the arrow is a move
+  // A collapsed step has no window, so the arrow moves the cursor
   it("moves straight past a step that is shut", () => {
     const one = model([step("setup"), step("build", { lines })]);
     assert.equal(apply(one, "up").cursor, 0);
@@ -133,7 +129,7 @@ describe("moving through the steps", () => {
     assert.equal(two.following, true);
   });
 
-  // Moving away means the reader chose a step, and a new one must not steal it
+  // Moving away means the reader chose a step, which a new one must not take
   it("stops following once the cursor is moved", () => {
     const one = model([step("setup"), step("build")]);
     assert.equal(apply(one, "up").following, false);
@@ -195,8 +191,7 @@ describe("what the terminal is given", () => {
     assert.equal(drawn.at(-1), HELP);
   });
 
-  // The title is written before the log, so the log rolls underneath a header
-  // that does not move
+  // The title is written first, so the log rolls underneath it
   it("keeps the open step's title above its log", () => {
     const one = model([step("setup"), step("build", { expanded: true, lines })]);
     const drawn = render(one);
@@ -260,8 +255,7 @@ describe("what the terminal is given", () => {
     assert.ok(!drawn.some((row) => row.includes("│")));
   });
 
-  // A row wider than the terminal wraps, and a wrapped row pushes everything
-  // under it out of a frame counted in rows
+  // A wrapped row pushes everything under it out of a frame counted in rows
   it("never draws a row wider than the terminal", () => {
     const wide = model(
       [
@@ -277,7 +271,7 @@ describe("what the terminal is given", () => {
     for (const row of render(wide)) assert.ok(row.length <= 76, `${row.length}: ${row}`);
   });
 
-  // The label filling the gap exactly is the case that used to overflow by one
+  // The label filling the gap exactly is what used to overflow
   it("keeps the timer on the row at every width", () => {
     for (let columns = 30; columns <= 120; columns += 1) {
       const one = model([step("Building web", { detail: "x".repeat(200) })], {
@@ -291,8 +285,7 @@ describe("what the terminal is given", () => {
     }
   });
 
-  // No caret: which row is being read is said in colour, and a column spent on
-  // a marker is a column the label does not get
+  // Said in colour: a column for a marker is one the label does not get
   it("spends no column on a cursor marker", () => {
     const drawn = render(model([step("setup"), step("build")], { cursor: 0 }));
 
@@ -318,8 +311,7 @@ describe("the colours", () => {
     assert.ok(drawn.every((row) => !row.includes("\u001b")));
   });
 
-  // The cursor is a place, the running step is a state, and a reader who has
-  // moved away from the running step has to be able to see both
+  // A reader who moved away has to see both the cursor and what is running
   it("gives the selected step and the running one different colours", () => {
     const one = model([step("setup", { state: "done", ended: START + 1000 }), step("build")], {
       cursor: 0,
@@ -342,9 +334,7 @@ describe("the colours", () => {
     assert.ok(row.includes("\u001b[91mswap"), row);
   });
 
-  // Every width is measured before an escape is added, because an escape is
-  // zero columns wide and a row measured with one in it wraps. A short row is
-  // what catches it: that is where the padding is doing the work
+  // Measured before colouring, since an escape is zero columns wide
   it("counts no escape towards the width of a row", () => {
     const details = ["", "ready", "x".repeat(200)];
 
@@ -359,8 +349,7 @@ describe("the colours", () => {
     }
   });
 
-  // The painted row and the plain one are the same row, so one is the other
-  // with the escapes taken out
+  // The painted and plain rows are the same row with the escapes taken out
   it("paints without moving anything", () => {
     const one = model([step("setup", { state: "done", ended: START + 2000 }), step("build")], {
       columns: 64,
@@ -383,9 +372,7 @@ describe("what the frame keeps room for", () => {
   const lines = Array.from({ length: 60 }, (_, index) => `line ${index}`);
   const rule = (drawn: string[]) => drawn.filter((row) => row.includes("\u2502")).length;
 
-  // Messages only ever accumulated, so a long enough run pushed every log off
-  // the screen: the running step stopped streaming and opening an older one
-  // did nothing. They are all written out again when the view closes
+  // Messages used to accumulate until they pushed everything off the screen
   it("never lets messages crowd the logs out", () => {
     const steps = [step("setup", { state: "done" }), step("build", { expanded: true, lines })];
 
@@ -407,8 +394,7 @@ describe("what the frame keeps room for", () => {
     assert.ok(drawn.some((row) => row.includes("newest")));
   });
 
-  // Served last, the focused step was left with whatever the others happened
-  // not to want, which on a busy build was nothing
+  // Served last, the focused step got whatever the others did not want
   it("gives the focused step its room before the others get a glance", () => {
     const one = model(
       [
@@ -427,8 +413,7 @@ describe("what the frame keeps room for", () => {
     assert.ok(above > 0, "and the other one still gets a glance");
   });
 
-  // Reserving a glance for a step that printed nothing is room taken from the
-  // one being read and given to nobody
+  // A glance for a silent step is room taken from the one being read
   it("gives a step that printed nothing none of the room", () => {
     const alone = model([step("Building web", { expanded: true, lines })], { cursor: 0 });
 
@@ -437,13 +422,12 @@ describe("what the frame keeps room for", () => {
       { cursor: 1 },
     );
 
-    // The empty step costs its own title row, and nothing beyond it
+    // The empty step costs its own title row and nothing beyond it
     assert.equal(rule(render(beside)), rule(render(alone)) - 1);
   });
 });
 
-// A frame of titles with no output says nothing the last line of output would
-// not, so when it cannot all fit the list is what gives way
+// Titles say nothing the last line of output would not, so the list gives way
 describe("a terminal with barely any room", () => {
   const lines = Array.from({ length: 60 }, (_, index) => `line ${index}`);
   const rule = (drawn: string[]) => drawn.filter((row) => row.includes("\u2502")).length;
@@ -498,8 +482,7 @@ describe("a terminal with barely any room", () => {
   });
 });
 
-// A finished row is a record of when it happened, so it stops moving. Only
-// the step still running has a clock that is still running with it
+// A finished row stops moving while the running step's clock does not
 describe("the run clock down the side", () => {
   it("freezes a finished step at the moment it ended", () => {
     const steps = [
@@ -528,7 +511,7 @@ describe("the run clock down the side", () => {
   });
 });
 
-// The newest row sits against the footer, the way a terminal's own output does
+// The newest row sits against the footer, as a terminal's own output does
 describe("where the frame sits", () => {
   it("fills upwards, so the blank rows are above", () => {
     const drawn = render(model([step("setup"), step("build")], { rows: 20 }));
@@ -539,8 +522,7 @@ describe("where the frame sits", () => {
   });
 });
 
-// Printed after every step, a message from the first ten seconds sat below a
-// build still running half an hour later
+// Printed per step, an early message sat below a build still running
 describe("where a message sits", () => {
   const at = (drawn: string[], needle: string) =>
     drawn.findIndex((row) => row.includes(needle));
@@ -585,8 +567,7 @@ describe("where a message sits", () => {
   });
 });
 
-// A step that is working and one that is wedged looked identical, which is
-// what made every silent phase this year take an hour to find
+// A working step and a wedged one looked identical on the row
 describe("telling working from wedged", () => {
   const running = (over: Partial<Step> = {}) =>
     step("build", { state: "running", started: START, ...over });
@@ -609,7 +590,7 @@ describe("telling working from wedged", () => {
     assert.equal(one, two);
   });
 
-  // The whole point: a build that has said nothing for a while says so
+  // A build that has said nothing for a while says so
   it("says how long a running step has been quiet", () => {
     const quiet = row(model([running({ spoke: START })], { now: START + 45_000 }));
     const busy = row(model([running({ spoke: START + 44_000 })], { now: START + 45_000 }));
@@ -625,7 +606,7 @@ describe("telling working from wedged", () => {
   });
 });
 
-// The run walks a list known before it starts, so what is left is knowable
+// The run walks a list known before it starts, so what is left is known
 describe("what has not started yet", () => {
   it("draws the points still to come, under what has", () => {
     const one = model([step("setup", { state: "done", ended: START + 1000 })], {
@@ -657,8 +638,7 @@ describe("what has not started yet", () => {
   });
 });
 
-// One row per line is what keeps a frame countable, and this is for reading an
-// error that does not fit
+// One row per line keeps a frame countable; this is for an error that does not fit
 describe("wrapping a long line", () => {
   const long = "x".repeat(200);
 
@@ -686,45 +666,42 @@ describe("wrapping a long line", () => {
   });
 });
 
-// A label such as the host a repository lives on. Drawn where there is colour,
-// and still readable where there is not
-describe("a tag on a row", () => {
-  const ESCAPE = /\u001b\[[0-9;]*m/g;
-  const said = `${tag("GH")} acme/backend staging`;
+// A phase whose work is in its children is not quiet while they talk
+describe("a step inside another", () => {
+  const parent = (over: Partial<Step> = {}) => step("build", { spoke: START, ...over });
+  const child = (over: Partial<Step> = {}) =>
+    step("Building backend", { parent: 0, depth: 1, detail: "compiling", spoke: START, ...over });
 
-  const row = (colour: boolean) =>
-    render(model([step("Cloning backend", { detail: said })], { columns: 80 }), colour).find(
-      (line) => line.includes("Cloning backend"),
-    ) ?? "";
+  const rowOf = (rows: string[], label: string) => rows.find((row) => row.includes(label)) ?? "";
 
-  it("is a blue label with rounded ends where there is colour", () => {
-    assert.ok(
-      row(true).includes("\u001b[34m\u25d6\u001b[0m\u001b[97;44mGH\u001b[0m\u001b[34m\u25d7\u001b[0m"),
-      JSON.stringify(row(true)),
-    );
+  it("is drawn under the step it runs inside, a level in", () => {
+    const rows = render(model([parent(), child()], { columns: 80 }));
+    const above = rowOf(rows, "build ");
+    const below = rowOf(rows, "Building backend");
+
+    assert.ok(rows.indexOf(above) < rows.indexOf(below));
+    assert.equal(below.indexOf("Building backend"), above.indexOf("build") + 2);
   });
 
-  it("is the bracketed word where there is none", () => {
-    assert.match(row(false), /Cloning backend {2}\[GH\] acme\/backend staging/);
-    assert.ok(!row(false).includes("\uE000"));
+  it("keeps the step it runs inside from saying it has gone quiet", () => {
+    const rows = render(model([parent(), child()], { now: START + 45_000 }));
+
+    assert.ok(!rowOf(rows, "build ").includes("quiet"), rowOf(rows, "build "));
+    assert.ok(rowOf(rows, "Building backend").includes("quiet 45s"));
   });
 
-  // Measured before the escapes go on, and the rounded ends are a column each,
-  // so the row fills the terminal exactly as the bracketed one does
-  it("leaves the row as wide as the terminal, drawn or not", () => {
-    assert.equal(row(true).replace(ESCAPE, "").length, 80);
-    assert.equal(row(false).length, 80);
+  it("says quiet again once nothing inside it is running", () => {
+    const done = child({ state: "done", ended: START + 1000 });
+    const rows = render(model([parent(), done], { now: START + 45_000 }));
+
+    assert.ok(rowOf(rows, "build ").includes("quiet 45s"));
   });
 
-  it("goes back to the line's own colour after the label", () => {
-    const painted = paintTags(`done ${tag("GH")} acme`, true, 32);
+  it("indents the lines a step inside another printed", () => {
+    const flat = render(model([step("Building backend", { expanded: true, lines: ["hello"] })]));
+    const nested = render(model([parent(), child({ expanded: true, lines: ["hello"] })]));
 
-    assert.ok(painted.startsWith("\u001b[32mdone \u001b[0m"));
-    assert.ok(painted.endsWith("\u001b[32m acme\u001b[0m"));
-  });
-
-  it("writes a whole line plainly when colour is off", () => {
-    assert.equal(paintTags(`done ${tag("GH")} acme`, false, 32), "done [GH] acme");
+    assert.equal(rowOf(nested, "hello"), `  ${rowOf(flat, "hello")}`);
   });
 });
 
@@ -748,7 +725,7 @@ describe("the clocks", () => {
     assert.ok(top(drawn).endsWith("1m30s"), top(drawn));
   });
 
-  // A finished step is a record of what it cost, so the number stops moving
+  // A finished step records what it cost, so the number stops
   it("freezes a step's timer at what it cost", () => {
     const finished = step("build", { state: "done", ended: START + 12_000 });
 

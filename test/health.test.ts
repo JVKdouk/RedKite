@@ -2,13 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import config from "./deployment.js";
-import { healthcheck, type HealthDeps, type Task } from "../src/index.js";
+import { healthcheck, silent, type HealthDeps, type Task } from "../src/index.js";
 
 const backend = config.apps.find((app) => app.name === "backend")!;
 const frontend = config.apps.find((app) => app.name === "frontend")!;
 
-// Records what the loop asked for, so a test can assert on the number of
-// attempts rather than only on the verdict
+// Records what the loop asked for, not only the verdict
 function harness(responses: { code: number; output: string }[]) {
   const calls: string[] = [];
   const sleeps: number[] = [];
@@ -20,8 +19,7 @@ function harness(responses: { code: number; output: string }[]) {
     },
     sleep: async (ms) => {
       sleeps.push(ms);
-      // A loop that never terminates would spin here forever in production,
-      // so the harness turns that into a failure the test can see
+      // The harness turns a non-terminating loop into a visible failure
       if (sleeps.length > 50) throw new Error("health loop did not terminate");
     },
   };
@@ -53,8 +51,7 @@ describe("health loop", () => {
     const { deps, waited } = harness([up]);
     await healthcheck("backend", 3001, backend.health, deps);
 
-    // The first probe is free. A flat initial delay charged every deploy ten
-    // seconds per app whether or not anything was wrong
+    // The first probe is free; a flat delay charged every app ten seconds
     assert.equal(waited(), 0);
   });
 
@@ -66,7 +63,7 @@ describe("health loop", () => {
   });
 
   it("reaches a slow container sooner than a fixed interval would", async () => {
-    // Ready on the fourth probe, which the old loop met at 10s + 3 x 5s
+    // Ready on the fourth probe
     const { deps, waited } = harness([refused, refused, refused, up]);
     const ok = await healthcheck("backend", 3001, backend.health, deps);
 
@@ -82,8 +79,7 @@ describe("health loop", () => {
     assert.equal(calls().length, 3);
   });
 
-  // The two implementations this replaces disagreed here, and the frontend one
-  // never incremented its counter, so a container stuck in this state span
+  // One of the two this replaces never incremented its counter here
   it("gives up on a body that answers but never becomes healthy", async () => {
     const { deps, calls } = harness([degraded]);
     const ok = await healthcheck("backend", 3001, { ...backend.health, delayMs: 0 }, deps);
@@ -118,7 +114,7 @@ describe("health loop", () => {
 
     const { deps: other } = harness([{ code: 0, output: '{"status":"ok"}' }]);
 
-    // The same body must not satisfy the backend, which requires three fields
+    // The same body must not satisfy the backend
     assert.equal(
       await healthcheck("backend", 3001, { ...backend.health, delayMs: 0, retries: 1 }, other),
       false,
@@ -126,8 +122,7 @@ describe("health loop", () => {
   });
 });
 
-// A check that gave up is read for what the container said each time, so every
-// attempt lands on the step rather than only the verdict
+// Every attempt lands on the step, not only the verdict
 describe("what a health check says on its step", () => {
   function reported() {
     const said: string[] = [];
@@ -145,6 +140,7 @@ describe("what a health check says on its step", () => {
       fail: (message: string) => {
         said.push(`failed ${message}`);
       },
+      step: () => silent.step(""),
     } satisfies Task;
 
     return { task, said };

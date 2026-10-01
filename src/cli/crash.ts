@@ -1,18 +1,15 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { untagged, type Task } from "../log.js";
+import type { Task } from "../log.js";
 import type { Deployment } from "../types.js";
 import { elapsed } from "./screen.js";
 import { causes } from "./log.js";
 import type { Viewer } from "./viewer.js";
 
-// What a failed run said, kept whole. The view trims a step to its last lines
-// and the alternate screen takes the rest with it, so the only complete record
-// of a run that went wrong is one written down while it happened.
+// The only complete record of a failed run, written down while it happened
 
-// Named rather than read from TMPDIR: the path is the one a person is told to
-// look in, and a runner that points TMPDIR somewhere else would hide it
+// Named rather than read from TMPDIR, which a runner could point elsewhere
 const ROOT = "/tmp";
 
 type Kind = "info" | "warn" | "fail" | "done" | "plan" | "step" | "command";
@@ -23,6 +20,8 @@ type Said = { at: number; kind: "detail" | "line"; text: string };
 
 type StepRecord = {
   label: string;
+  // How many steps it ran inside, so the index reads as the view did
+  depth: number;
   started: number;
   ended?: number;
   state: "running" | "done" | "failed";
@@ -47,15 +46,13 @@ export type Crash = {
   error?: unknown;
 };
 
-// Every call reaches the wrapped log unchanged, so the view behaves as it did.
-// The transcript is a copy kept beside it, never a replacement for it
+// A copy kept beside the wrapped log, never a replacement for it
 export function recording(log: Viewer, now: () => number = Date.now) {
   const transcript: Transcript = { started: now(), entries: [], steps: [] };
   const note = (kind: Kind, text: string) => transcript.entries.push({ at: now(), kind, text });
 
-  const step = (label: string): Task => {
-    const record: StepRecord = { label, started: now(), state: "running", said: [] };
-    const task = log.step(label);
+  const open = (label: string, task: Task, depth: number): Task => {
+    const record: StepRecord = { label, depth, started: now(), state: "running", said: [] };
 
     transcript.steps.push(record);
     note("step", `${label} started`);
@@ -86,8 +83,11 @@ export function recording(log: Viewer, now: () => number = Date.now) {
         settle("failed", message);
         task.fail(message);
       },
+      step: (child) => open(child, task.step(child), depth + 1),
     };
   };
+
+  const step = (label: string) => open(label, log.step(label), 0);
 
   const recorded: Viewer = Object.assign(
     (message: string) => {
@@ -116,24 +116,19 @@ export function recording(log: Viewer, now: () => number = Date.now) {
     },
   );
 
-  // A host command is only shown with --verbose, and is exactly what a crash log
-  // is read for, so it is kept whether it was shown or not
+  // Kept whether it was shown or not, being what a crash log is read for
   const command = (text: string) => note("command", text);
 
   return { log: recorded, transcript, command };
 }
 
-// One directory per failed run, under the environment it failed in. Named from
-// the command line, so both segments are made safe to be a path first
+// One per failed run, with both path segments made safe first
 export function crashDirectory(project: string, environment: string, at: Date, root = ROOT) {
   const moment = at.toISOString().replaceAll(":", "-");
   return join(root, slug(project), slug(environment), `crash-${moment}`);
 }
 
-// The run's own log, and one file per step. A build's thousands of lines would
-// bury everything else in a single file, and a step's file is what gets opened
-// first. Numbered in the order they started, which also keeps two steps that
-// share a label from sharing a file
+// One file per step, numbered in start order, so two labels cannot share one
 export function crashFiles(transcript: Transcript, crash: Crash): Record<string, string> {
   const width = Math.max(2, String(transcript.steps.length).length);
 
@@ -150,9 +145,7 @@ export function crashFiles(transcript: Transcript, crash: Crash): Record<string,
   };
 }
 
-// Nothing is written for a deployment that turned it off. Otherwise private to
-// whoever ran it: /tmp is shared by everyone on the machine, and a build's output
-// can say more than it meant to
+// Private to whoever ran it: /tmp is shared, and output can say too much
 export async function dumpCrash(
   config: Deployment,
   transcript: Transcript,
@@ -164,8 +157,7 @@ export async function dumpCrash(
   const directory = crashDirectory(config.project, crash.environment, new Date(crash.at), root);
   await mkdir(dirname(directory), { recursive: true, mode: 0o700 });
 
-  // Not recursive: a directory already there belongs to another run, and nothing
-  // of this one is written into it
+  // Not recursive: a directory already there belongs to another run
   await mkdir(directory, { mode: 0o700 });
 
   for (const [name, contents] of Object.entries(crashFiles(transcript, crash))) {
@@ -192,7 +184,7 @@ function runLog(transcript: Transcript, crash: Crash, named: Named[]) {
 
   const index = named.map(({ step, file }) => {
     const took = elapsed(step.ended ?? crash.at, step.started);
-    return `${file.padEnd(40)} ${step.state.padEnd(8)} ${took}`;
+    return `${`${"  ".repeat(step.depth)}${file}`.padEnd(40)} ${step.state.padEnd(8)} ${took}`;
   });
 
   return lines([
@@ -220,8 +212,7 @@ function runLog(transcript: Transcript, crash: Crash, named: Named[]) {
   ]);
 }
 
-// Stamped from the start of the run, the same as run.log, so a line here can be
-// found among what the run said around it
+// Stamped from the start of the run, so a line can be found among the rest
 function stepLog(transcript: Transcript, crash: Crash, step: StepRecord) {
   const since = sinceStart(transcript);
   const note = step.note ? `: ${step.note}` : "";
@@ -239,8 +230,7 @@ function stepLog(transcript: Transcript, crash: Crash, step: StepRecord) {
   ]);
 }
 
-// Whole, where the terminal gets the tail: the stack of every error in the
-// chain, since the step that threw is usually two causes down
+// Whole, with every error in the chain: the step that threw is often two down
 function errorLines(error: unknown) {
   if (error === undefined) return ["none thrown"];
   if (!(error instanceof Error)) return [String(error)];
@@ -259,10 +249,9 @@ function lines(rows: string[]) {
   return `${rows.join("\n")}\n`;
 }
 
-// Continuation lines line up under the text rather than under the timestamp. A
-// file cannot draw a tag, so it gets the bracketed word
+// Continuation lines line up under the text, not the timestamp
 function indent(text: string) {
-  return untagged(text).replaceAll("\n", "\n              ");
+  return text.replaceAll("\n", "\n              ");
 }
 
 function slug(text: string) {

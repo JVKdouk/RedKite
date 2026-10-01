@@ -7,13 +7,10 @@ type NextAppOptions = {
   port?: number;
   steps?: string[];
   dependencies?: { files: string[]; step: string } | false;
-  // Whether next.config sets output: "standalone". Defaults to true, which is
-  // the layout worth deploying: a tree that runs on node alone
+  // Whether next.config sets output: "standalone". Defaults to true
   standalone?: boolean;
 };
 
-// The standalone layout is three directories that have to land in the right
-// places, which is the only part of a Next build that is not a node build
 export function nextApp(options: NextAppOptions = {}): BuildSpec {
   const port = options.port ?? 3000;
   const standalone = options.standalone ?? true;
@@ -25,8 +22,7 @@ export function nextApp(options: NextAppOptions = {}): BuildSpec {
     dependencies: options.dependencies,
   };
 
-  // Relative, because the runtime starts at the app's root and a monorepo puts
-  // that under its own directory rather than at the top of the image
+  // Relative, because the runtime starts at the app's root, not the image top
   const start = (command: string) =>
     ["sh", "-c", `HOSTNAME=0.0.0.0 PORT=${port} ${command}`];
 
@@ -34,14 +30,10 @@ export function nextApp(options: NextAppOptions = {}): BuildSpec {
     return {
       ...nodeApp({
         ...shared,
-        // The whole tree, because next start reads the source layout it built
-        // from and resolves its own dependencies at runtime
+        // The whole tree: next start reads the source layout and resolves at runtime
         output: "/app",
-        // npx resolves the binary from node_modules/.bin upwards, so this
-        // finds it whether a workspace hoisted it or the app owns it
+        // npx resolves upwards, so this works hoisted or app-owned
         entrypoint: start("npx --no-install next start"),
-        // Without the modules cache, so node_modules is a layer of the image
-        // rather than a mount the runtime stage never sees
         caches: ["yarn", "npm", "next-app"],
       }),
       preset: "nextApp",
@@ -53,19 +45,14 @@ export function nextApp(options: NextAppOptions = {}): BuildSpec {
     ...nodeApp({
       ...shared,
       output: "/app/.next/standalone",
-      // static is what the build produced and the server serves. public is
-      // whatever the repository put there, and plenty of apps have none
+      // static is built and served; public is optional, plenty of apps have none
       carry: ["/app/.next/static", { path: "/app/public", optional: true }],
       entrypoint: start("node server.js"),
-      // next-app is Next's own build cache, which only ever makes a build
-      // slower when it is dropped. node_modules is not here for the same
-      // reason it is not in nodeApp: a dropped mount and a kept layer is a
-      // build that cannot find what the manifest lists
+      // next-app is Next's build cache; node_modules is omitted as in nodeApp
       caches: ["yarn", "npm", "next-app"],
     }),
     preset: "nextApp",
-    // The standalone tree traces from the workspace root, so an app in a
-    // subdirectory arrives at that subdirectory and not at the top of it
+    // The standalone tree traces from the workspace root, keeping subdirectories
     keepsLayout: true,
   };
 }

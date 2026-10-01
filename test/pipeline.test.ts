@@ -16,9 +16,7 @@ import {
 } from "../src/index.js";
 import { fakeHost } from "./fakes.js";
 
-// A run is one list of steps, and redkite's four are ordinary members of it. What
-// is asserted here is the order they run in, the value each one is handed, and
-// that a deployment can put its own step where one of redkite's was.
+// Asserts the order, the value each step sees, and that any can be replaced
 
 function setting(): Omit<Context, "task"> {
   const host = fakeHost();
@@ -35,8 +33,7 @@ function setting(): Omit<Context, "task"> {
   };
 }
 
-// Stands in for redkite's four, stamping the value so a hook can be asserted to
-// have run between two of them rather than merely to have run
+// Stamps the value, so a hook can be shown to run between two of them
 function supplied(trace: string[]): AnyStep[] {
   return [
     defineStep("setup", (input) => {
@@ -118,7 +115,7 @@ describe("where a step runs", () => {
   });
 });
 
-// Nothing about redkite's four makes them harder to displace than any other step
+// Nothing makes redkite's four harder to displace than any other step
 describe("a step at a point redkite already uses", () => {
   it("replaces it, where redkite had it", async () => {
     const trace: string[] = [];
@@ -138,7 +135,7 @@ describe("a step at a point redkite already uses", () => {
   it("is how one of redkite's is turned off", async () => {
     const trace: string[] = [];
 
-    // A cleanup that reclaims nothing, for a host somebody else prunes
+    // A cleanup that reclaims nothing
     const steps = merge(supplied(trace), [
       defineStep("cleanup", (input) => ({ ...input, removed: [], reclaimed: [] })),
     ]);
@@ -158,8 +155,7 @@ describe("a step at a point redkite already uses", () => {
   });
 });
 
-// A step that cannot possibly work should say so before the run touches
-// anything, not once the network is up and the images are built
+// Said before the run touches anything, not once the images are built
 describe("what a step checks before the run", () => {
   it("runs every check before the first step", async () => {
     const trace: string[] = [];
@@ -220,8 +216,7 @@ describe("what a step is handed", () => {
 
     await runPipeline("deploy", merge(supplied([]), [step]), setting());
 
-    // The value grows rather than being replaced, so the last step still reads
-    // the environment the run started with and the network setup brought up
+    // The value grows rather than being replaced, so the last step sees it all
     assert.equal(seen[0]?.environment, "staging");
     assert.equal(seen[0]?.network, "net");
     assert.equal(seen[0]?.ok, true);
@@ -258,8 +253,7 @@ describe("a step that throws", () => {
       /build:before:refuse/,
     );
 
-    // Everything after it was written assuming the steps before did what they
-    // said they would, so none of them ran
+    // Everything after assumed the steps before worked, so none of them ran
     assert.deepEqual(trace, ["setup"]);
   });
 
@@ -277,10 +271,7 @@ describe("a step that throws", () => {
   });
 });
 
-// Checked where the config is defined, so a typo is a config that fails to load
-// rather than a deploy that stops half way with the host already changed
-// A run that is asked to stop unwinds through its own failure path, so the
-// caller's cleanup runs and the host does not keep a scratch directory
+// A stop unwinds through the failure path, so the scratch directory goes
 describe("stopping a run", () => {
   it("stops before the next step rather than inside one", async () => {
     const trace: string[] = [];
@@ -316,8 +307,7 @@ describe("a point that is not one", () => {
     assert.throws(() => addressOf("provision"), /names no phase/);
   });
 
-  // The phase that moves the addresses used to be called deploy, and a config
-  // written against it should be told what it became rather than what it is not
+  // A config written against the old name is told what it became
   it("says what a phase that was renamed became", () => {
     assert.throws(() => addressOf("deploy:before:migrate"), /which is now swap/);
     assert.throws(() => addressOf("deploy"), /which is now swap/);

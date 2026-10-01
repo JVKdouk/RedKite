@@ -2,14 +2,9 @@ import type { Context } from "./pipeline.js";
 import { readEnv } from "./secrets/refs.js";
 import type { AppSpec } from "./types.js";
 
-// What the vault resolved to, handed over as a file rather than baked into an
-// image. Nothing from a vault is in a layer, so this is the only way anything
-// running the app's image sees its environment: the container itself, and the
-// migrations and checks that run in the builder.
+// Vault values reach the app as a file, never baked into an image layer
 
-// Written to the host and handed over as a file, so no value appears in an
-// argument list. Docker reads it when a container is created, and again for
-// each `run --env-file`, so the file goes with the rest of the deploy's scratch
+// Written to the host, so no value appears in an argument list
 export async function envFileFor(app: AppSpec, context: Context) {
   if (!app.secrets) return undefined;
 
@@ -23,13 +18,10 @@ export async function envFlags(app: AppSpec, context: Context) {
   return path ? [`--env-file ${path}`] : [];
 }
 
-// A vault holds dotenv, and docker's env file is not dotenv: a quote is part of
-// the value there, so DATABASE_URL="postgres://..." reaches the process with the
-// quote still on it and every url parser rejects the scheme
+// Docker's env file is not dotenv: a quote there stays part of the value
 export function dockerEnv(contents: string) {
   const lines = Object.entries(parseEnv(contents)).map(([key, value]) => {
-    // The format is one variable per line, so there is no spelling of this that
-    // docker would read back. Better to name the variable than to truncate it
+    // One variable per line, so there is no spelling of this docker reads back
     if (value.includes("\n")) {
       throw new Error(
         `${key} spans more than one line, which a docker env file cannot carry. ` +
@@ -43,9 +35,7 @@ export function dockerEnv(contents: string) {
   return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }
 
-// Enough of the format to carry a credential: KEY=value, quotes stripped,
-// blank lines and comments skipped. A quoted value may run past the end of its
-// line, because a key or a certificate is written the way it was generated
+// KEY=value, quotes stripped, blank lines and comments skipped
 export function parseEnv(contents: string) {
   const values: Record<string, string> = {};
   const lines = contents.split("\n");
@@ -71,8 +61,7 @@ export function parseEnv(contents: string) {
       continue;
     }
 
-    // The quote never closed on its own line. Take whole lines until one closes
-    // it, so a pem arrives whole rather than as its first line
+    // Take whole lines until the quote closes, so a pem arrives whole
     const held = [start.slice(1)];
 
     while (at + 1 < lines.length) {

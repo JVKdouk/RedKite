@@ -20,9 +20,7 @@ export async function readRef(ref: SecretRef, stores: SecretStores) {
   throw new Error(`No store for provider ${ref.provider}, deploy was given ${known}`);
 }
 
-// Concatenated in the order written. Every dotenv parser builds an object as it
-// reads, so a key that appears twice takes its later value, which is the
-// precedence the config file reads as having
+// Concatenated in order, so a key appearing twice takes its later value
 export async function readEnv(refs: SecretRefs | undefined, stores: SecretStores) {
   const contents = await Promise.all(
     listRefs(refs).map(async (ref) => await readRef(ref, stores)),

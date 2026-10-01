@@ -1,9 +1,4 @@
-import { TAGS, untagged } from "../log.js";
-
-// The deploy as a list of collapsibles. A step is a title and the lines it
-// produced; the one running is open, the ones finished are shut, and the person
-// watching moves between them. The model and the renderer are pure, so what the
-// terminal shows is asserted on rather than driven.
+// The deploy as a list of collapsibles. Model and renderer are pure, so both are asserted on
 
 export type StepState = "running" | "done" | "failed";
 
@@ -16,18 +11,19 @@ export type Step = {
   note?: string;
   detail?: string;
   lines: string[];
-  // When it last said anything. A step that is working and one that is wedged
-  // look identical without it, which is the whole reason for the spinner
+  // When it last said anything, which is what the spinner and quiet read
   spoke?: number;
   expanded: boolean;
   // Opened by hand, so finishing does not shut it under the reader
   held: boolean;
   // Lines between the bottom of the log and the bottom of the window
   offset: number;
+  // The step this runs inside, by index, and how deep that makes it
+  parent?: number;
+  depth: number;
 };
 
-// Said outside a step, carrying the moment it was said so its row stops
-// ticking the way a finished step's does
+// Carries the moment it was said, so its row stops ticking
 export type Message = { text: string; at: number };
 
 export type Model = {
@@ -38,11 +34,9 @@ export type Model = {
   following: boolean;
   // Nothing opens on its own, including the step that is running
   minimal: boolean;
-  // Long lines wrap rather than being cut. Off by default: one row per line is
-  // what keeps a frame countable, and this is for reading an error
+  // Off by default: one row per line is what keeps a frame countable
   wrapped: boolean;
-  // Every point the run will walk, known before it starts. What has not begun
-  // is drawn under what has, so the end is visible from the start
+  // Known before the run starts, so the end is visible from the first frame
   planned: string[];
   rows: number;
   columns: number;
@@ -80,8 +74,7 @@ export function emptyModel(rows: number, columns: number, now: number): Model {
 const ESCAPE = "\u001b";
 const INTERRUPT = "\u0003";
 
-// A terminal delivers whatever arrived since the last read, so two arrow keys
-// pressed quickly land as one chunk. Reading only the whole chunk drops both
+// Two arrow keys pressed quickly land as one chunk, so each is read out
 export function keysOf(data: string): Key[] {
   const keys: Key[] = [];
   let rest = data;
@@ -115,8 +108,7 @@ export function keyOf(data: string): Key | undefined {
   return undefined;
 }
 
-// Moving up runs out of log before it runs out of steps: the window climbs to
-// the top of what this step printed, and only then does the cursor leave it
+// The window climbs to the top of a step's log before the cursor leaves it
 export function apply(model: Model, key: Key): Model {
   const step = model.steps[model.cursor];
 
@@ -152,8 +144,7 @@ export function apply(model: Model, key: Key): Model {
     };
   }
 
-  // Anywhere, so a reader who collapsed everything does not have to find the
-  // running step before opening it again
+  // Anywhere, so a reader who collapsed everything need not find the running step
   if (key === "expand") {
     const current = model.steps.length - 1;
 
@@ -193,67 +184,26 @@ function scrolled(model: Model, offset: number): Model {
   };
 }
 
-// Colours are put on after every width is measured, because an escape is zero
-// columns wide and a row measured with one in it is a row that wraps
+// After measuring: an escape is zero columns wide and would make a row wrap
 const DIM = 90;
 const CURSOR = 96;
 const RUNNING = 93;
 const DONE = 32;
 const FAILED = 91;
 const WARN = 33;
-// A tag is a blue label with rounded ends: the ends in blue on the terminal's own
-// ground, and the word white on blue between them
-const TAG_EDGE = 34;
-const TAG_BODY = "97;44";
 
-type Colour = number | string;
+type Piece = { text: string; colour?: number };
 
-type Piece = { text: string; colour?: Colour };
-
-function paint(text: string, colour: Colour | undefined, on: boolean) {
+function paint(text: string, colour: number | undefined, on: boolean) {
   if (!on || colour === undefined || text === "") return text;
   return `\u001b[${colour}m${text}\u001b[0m`;
-}
-
-// Text that may carry a tag, as pieces, so the row is measured before any escape
-// is added. The rounded ends are a column each, the same as the brackets drawn
-// in their place without colour, so a row is the same width either way
-function tagged(text: string, colour: Colour | undefined, on: boolean): Piece[] {
-  if (!on) return [{ text: untagged(text), colour }];
-
-  const pieces: Piece[] = [];
-  let at = 0;
-
-  for (const match of text.matchAll(TAGS)) {
-    if (match.index > at) pieces.push({ text: text.slice(at, match.index), colour });
-
-    pieces.push(
-      { text: "\u25d6", colour: TAG_EDGE },
-      { text: match[1] ?? "", colour: TAG_BODY },
-      { text: "\u25d7", colour: TAG_EDGE },
-    );
-
-    at = match.index + match[0].length;
-  }
-
-  if (at < text.length) pieces.push({ text: text.slice(at), colour });
-  return pieces;
-}
-
-// For what is written as a whole line rather than drawn into a row: the summary
-// left on the screen, and the plain log. The line's own colour resumes after
-export function paintTags(text: string, on: boolean, colour?: Colour) {
-  return tagged(text, colour, on)
-    .map((piece) => paint(piece.text, piece.colour, on))
-    .join("");
 }
 
 function widthOf(pieces: Piece[]) {
   return pieces.reduce((total, piece) => total + piece.text.length, 0);
 }
 
-// Clips the row as one string would clip, then hands each surviving piece its
-// colour. The ellipsis belongs to whichever piece was cut
+// Clips as one string would, then colours each surviving piece
 function clipped(pieces: Piece[], room: number, on: boolean) {
   if (widthOf(pieces) <= room) {
     return pieces.map((piece) => paint(piece.text, piece.colour, on)).join("");
@@ -274,25 +224,22 @@ function clipped(pieces: Piece[], room: number, on: boolean) {
 }
 
 const FOOTER = 2;
-// A step that is open but not the one being read shows this much of itself
+// What an open step that is not being read shows of itself
 const GLANCE = 6;
 // What the focused step keeps even when everything else wants the room
 const FLOOR = 3;
-// How many of them the frame carries. Every message is written out again when
-// the view closes, and a list that only grows crowds every log off the screen
+// A list that only grows would crowd every log off the screen
 const MESSAGES = 6;
 
-// Every key, inside eighty columns. One too wide is a row that wraps, and a
-// wrapped footer costs the frame a line it counted on
+// Every key inside eighty columns, since a wrapped footer costs a counted line
 export const HELP =
   "\u2191\u2193 move \u00b7 enter open \u00b7 shift+\u2191 latest \u00b7 +/- all \u00b7 w wrap \u00b7 q quit";
 
-// Turns on the frame the clock is in, so the view is a pure function of now
+// The frame's clock, so the view is a pure function of now
 const SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f";
 const SPIN_MS = 80;
 
-// How long a running step may say nothing before the frame says so. Short
-// enough to catch a wedge, long enough that an ordinary pause is not one
+// Short enough to catch a wedge, long enough that a pause is not one
 const QUIET_MS = 8000;
 
 export function render(model: Model, colour = false): string[] {
@@ -301,14 +248,11 @@ export function render(model: Model, colour = false): string[] {
   const messages = model.messages.slice(-MESSAGES);
   const budget = Math.max(1, body - messages.length);
 
-  // What the step being read keeps whatever else wants the room. A frame of
-  // titles with no output says nothing the last line of output would not, so
-  // the list is what gives way rather than the log
+  // The list gives way rather than the log, which carries what titles do not
   const focused = model.steps[model.cursor];
   const floor = focused?.expanded ? Math.min(FLOOR, rowsOf(model, focused)) : 0;
 
-  // More than the terminal has room for, so the list itself scrolls and only
-  // the step under the cursor keeps a log
+  // More than fits, so the list scrolls and only the focused step keeps a log
   if (model.steps.length + floor > budget) {
     const room = Math.max(1, budget - floor);
     const start = Math.max(0, Math.min(model.cursor - room + 1, model.steps.length - room));
@@ -350,8 +294,7 @@ export function render(model: Model, colour = false): string[] {
   return finish(model, rows, body, colour);
 }
 
-// Every point the run will walk that has not started. Drawn under what has, so
-// how much is left is visible from the first frame rather than at the end
+// Drawn under what has started, so how much is left shows from the first frame
 function remaining(model: Model) {
   const started = new Set(model.steps.map((step) => step.label));
   return model.planned.filter((point) => !started.has(point));
@@ -373,9 +316,7 @@ type Row =
   | { kind: "step"; at: number; step: Step; index: number }
   | { kind: "message"; at: number; message: Message };
 
-// Everything the run has said, in the order it said it. Messages used to be
-// printed after every step, which put one from the first ten seconds below a
-// build still running half an hour later
+// In the order it was said, rather than printed after each step
 function ordered(model: Model, messages: Message[]): Row[] {
   const steps: Row[] = model.steps.map((step, index) => ({
     kind: "step",
@@ -390,9 +331,7 @@ function ordered(model: Model, messages: Message[]): Row[] {
     message,
   }));
 
-  // A step announced in the same millisecond as a message leads it: the
-  // message is usually about what the step then went and did. Everything else
-  // ties to nothing, and a stable sort leaves it where it was
+  // On a tie the message leads, being usually about what the step then did
   const rank = (row: Row) => (row.kind === "step" ? 0 : 1);
 
   return [...steps, ...said].sort((a, b) => a.at - b.at || rank(a) - rank(b));
@@ -403,15 +342,14 @@ function said(model: Model, message: Message, colour: boolean) {
     [
       { text: gutter(model, message.at), colour: DIM },
       { text: "   " },
-      ...tagged(message.text, WARN, colour),
+      { text: message.text, colour: WARN },
     ],
     Math.max(24, model.columns),
     colour,
   );
 }
 
-// The focused step is the one being read, so it is served first and every other
-// open one gets a glance out of what it did not need
+// Served first, and every other open step gets a glance out of the rest
 function share(model: Model, budget: number) {
   const shown = new Map<number, number>();
   const open = model.steps
@@ -424,9 +362,7 @@ function share(model: Model, budget: number) {
   let left = Math.max(0, budget);
 
   if (focused) {
-    // What the glances would actually cost, not what they could: a step that
-    // printed nothing reserves nothing, and served last the focused step used
-    // to be left with whatever the others happened not to want
+    // What the glances cost, not what they could: a silent step reserves nothing
     const glances = others.reduce(
       (total, item) => total + Math.min(GLANCE, rowsOf(model, item.step)),
       0,
@@ -449,37 +385,33 @@ function share(model: Model, budget: number) {
   return shown;
 }
 
-// How many rows a step's log would fill. One per line until they are wrapped,
-// and then as many as each line needs
+// One row per line until they are wrapped, then as many as each needs
 function rowsOf(model: Model, step: Step) {
   if (!model.wrapped) return step.lines.length;
 
-  const room = Math.max(8, model.columns - RULE.length);
+  const room = Math.max(8, model.columns - RULE.length - indentOf(step).length);
   return step.lines.reduce((total, line) => total + wrapped(line, room).length, 0);
 }
 
 const RULE = "        \u2502 ";
 
-// The newest lines, less whatever the reader has scrolled back past. One line
-// each: a wrapped line would push the rows below it off a frame sized in rows
+// One row each, so a wrapped line cannot push the rows below it off
 function logs(model: Model, step: Step, take: number, colour: boolean) {
   if (take <= 0) return [];
 
   const end = Math.max(1, step.lines.length - step.offset);
-  const room = Math.max(8, model.columns - RULE.length);
+  const room = Math.max(8, model.columns - RULE.length - indentOf(step).length);
   const lines = step.lines.slice(Math.max(0, end - take), end);
 
-  // Wrapped, one line is several rows, so what is taken is counted in rows
-  // after the wrapping rather than in lines before it
+  // Wrapped, one line is several rows, so this counts rows not lines
   const rows = lines.flatMap((line) =>
     model.wrapped ? wrapped(line, room) : [clip(line, room)],
   );
 
-  return rows.slice(-take).map((row) => `${paint(RULE, DIM, colour)}${row}`);
+  return rows.slice(-take).map((row) => `${indentOf(step)}${paint(RULE, DIM, colour)}${row}`);
 }
 
-// Cut on width alone. A build's output is not prose, and breaking a path or a
-// stack frame on a space would put half of it where nothing can find it
+// Cut on width alone: breaking a path on a space hides half of it
 function wrapped(line: string, room: number) {
   if (line.length <= room) return [line];
 
@@ -489,15 +421,13 @@ function wrapped(line: string, room: number) {
   return rows;
 }
 
-// The ellipsis is the whole point: a line that was cut has to say so
+// The ellipsis is the point: a line that was cut has to say so
 export function clip(text: string, room: number) {
   if (text.length <= room) return text;
   return `${text.slice(0, room - 1)}\u2026`;
 }
 
-// Padded above rather than below, so the newest row sits against the footer
-// and the frame fills upwards the way a terminal's own output does. The footer
-// is cut like any other row: one too wide wraps, and a wrapped row costs two
+// Padded above, so the frame fills upwards; the footer is cut like any row
 function finish(model: Model, rows: string[], body: number, colour: boolean) {
   const filled = rows.slice(0, body);
   const blanks = Array.from({ length: Math.max(0, body - filled.length) }, () => "");
@@ -515,33 +445,41 @@ function title(model: Model, step: Step, index: number, colour: boolean) {
   const said = step.note ? `: ${step.note}` : step.detail ? `  ${step.detail}` : "";
 
   const head: Piece[] = [
-    // The run clock as this row stood: still moving while the step is, and
-    // stopped at the moment it finished
+    // The clock as this row stood, stopped at the moment the step finished
     { text: gutter(model, step.ended), colour: DIM },
     { text: " " },
-    // Turning while the step is working, blank when it is not. A step that has
-    // stopped saying anything still turns, which is what quiet then says
+    // Under the step it runs inside, a level at a time
+    { text: indentOf(step) },
+    // Turning while the step works, including one that has gone quiet
     { text: running ? spinner(model.now) : " ", colour: RUNNING },
     { text: " " },
     { text: glyph, colour: stateColour(step) },
     { text: " " },
     { text: step.label, colour: labelColour(step, selected) },
-    ...tagged(said, DIM, colour),
+    { text: said, colour: DIM },
     { text: quiet(model, step), colour: WARN },
   ];
 
-  // Frozen at what it cost the moment it finished, still counting until then
+  // Frozen at what it cost the moment it finished
   return fit(model, head, elapsed(step.ended ?? model.now, step.started), colour);
+}
+
+// Two columns for every step it sits inside
+function indentOf(step: Step) {
+  return "  ".repeat(step.depth);
 }
 
 function spinner(now: number) {
   return SPINNER[Math.floor(now / SPIN_MS) % SPINNER.length] ?? " ";
 }
 
-// How long a running step has said nothing. The difference between a build
-// that is working and one that is wedged, which nothing else on the row shows
+// The difference between a build that is working and one that is wedged
 function quiet(model: Model, step: Step) {
   if (step.state !== "running") return "";
+
+  // A quiet child says so on its own row, not on every row above it
+  const index = model.steps.indexOf(step);
+  if (model.steps.some((other) => other.parent === index && other.state === "running")) return "";
 
   const since = model.now - (step.spoke ?? step.started);
   if (since < QUIET_MS) return "";
@@ -555,8 +493,7 @@ function stateColour(step: Step) {
   return RUNNING;
 }
 
-// A failure outranks everything: it is the row the reader is looking for. Then
-// where the cursor is, then what is still running
+// A failure outranks everything, then the cursor, then what is running
 function labelColour(step: Step, selected: boolean) {
   if (step.state === "failed") return FAILED;
   if (selected) return CURSOR;
@@ -565,8 +502,7 @@ function labelColour(step: Step, selected: boolean) {
   return undefined;
 }
 
-// How far into the run this row belongs. Given a moment it stops there, which
-// is what keeps a finished row from ticking along with the one still running
+// Given a moment it stops there, so a finished row does not tick along
 function gutter(model: Model, at?: number) {
   return elapsed(at ?? model.now, model.started, true);
 }
@@ -585,9 +521,7 @@ function pad(value: number) {
   return String(value).padStart(2, "0");
 }
 
-// The timer is pushed to the right edge, and the label is what gives way when
-// there is not room for both. One space between them always, which is a row
-// wider than the terminal when the label is allowed to fill the gap
+// The label gives way, keeping the one space that would otherwise overflow
 function fit(model: Model, head: Piece[], timer: string, colour: boolean) {
   const width = Math.max(24, model.columns);
   const room = width - timer.length - 1;

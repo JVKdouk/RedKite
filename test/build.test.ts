@@ -58,8 +58,7 @@ describe("build pipeline", () => {
   it("renders the pipeline beside the checkout rather than into it", async () => {
     const { host } = await run(backend);
 
-    // A repository with a Dockerfile of its own keeps it, and git clean does
-    // not have to be taught about a file redkite wrote
+    // A repository keeps its own Dockerfile, and git clean need not know about ours
     assert.match(buildCommand(host.commands), /-f \/tmp\/redkite\/backend\.Dockerfile /);
     assert.ok(host.files.has("backend.Dockerfile"));
   });
@@ -89,8 +88,7 @@ describe("build pipeline", () => {
     assert.match(buildCommand(host.commands), new RegExp(`-t ${result.tag} -t ${target.container}`));
   });
 
-  // A second build of the same source, exporting layers the first one already
-  // produced. Nothing has to ask for it, so no step can find it missing
+  // A second build of the same source, exporting layers the first produced
   it("keeps the builder as an image of its own", async () => {
     const { result, host } = await run(frontend);
 
@@ -99,8 +97,7 @@ describe("build pipeline", () => {
   });
 });
 
-// A host too small to compile on. The image is built here and streamed over the
-// connection that is already open, rather than built where it is needed
+// A host too small to compile on, so the image is streamed over the open connection
 describe("building on this machine", () => {
   it("ships every tag it built, in one archive", async () => {
     const builder = fakeHost();
@@ -128,8 +125,7 @@ describe("building on this machine", () => {
     assert.ok(builder.commands.some((command) => command.startsWith("build ")));
   });
 
-  // The builder holding an image the runner does not is the whole reason the
-  // skip check cannot ask the daemon that compiled it
+  // The skip check cannot ask the daemon that compiled it
   it("skips the build only when the runner holds it", async () => {
     const target = topology.apps.find((app) => app.name === "frontend")!;
 
@@ -143,8 +139,7 @@ describe("building on this machine", () => {
       environment: "staging",
     });
 
-    // A second machine that compiled it before, deploying to a host that never
-    // received it
+    // A machine that compiled it before, deploying to a host that never received it
     const builder = fakeHost();
     for (const image of first.host === builder.host ? [] : first.images) builder.images.add(image);
 
@@ -235,8 +230,7 @@ describe("an image the host already holds", () => {
     const host = fakeHost();
     const target = topology.apps.find((app) => app.name === "backend")!;
 
-    // A runtime image whose builder was reclaimed would otherwise migrate from
-    // whichever release happened to be tagged last
+    // Otherwise a migration runs from whichever release was tagged last
     for (const image of first.host.images) {
       if (!image.includes("-builder")) host.images.add(image);
     }
@@ -254,9 +248,7 @@ describe("an image the host already holds", () => {
   });
 });
 
-// The host skips the build when it already holds the tag. Keying that on the
-// commit alone served the previous pipeline's image forever: a fix to the build
-// changed nothing the host could see, and the old image kept being deployed
+// Keyed on more than the commit, or a pipeline fix would change nothing visible
 describe("what the image is tagged by", () => {
   const fingerprintOf = async (app: AppSpec, overrides: Partial<BuildContext> = {}) =>
     (await run(app, overrides)).result.fingerprint;
@@ -271,8 +263,7 @@ describe("what the image is tagged by", () => {
     assert.notEqual(before, after);
   });
 
-  // dir renders a different Dockerfile without touching the build spec, so
-  // without this the host answers with the image built from the old layout
+  // dir changes the Dockerfile alone, which the tag still has to reflect
   it("changes when the app moves inside the repository", async () => {
     assert.notEqual(
       await fingerprintOf(backend),
@@ -287,8 +278,7 @@ describe("what the image is tagged by", () => {
     );
   });
 
-  // A secret mount is not part of a layer's cache key, so the fingerprint is
-  // what has to reach BuildKit, and it reaches it through the secret's id
+  // A secret mount is not a cache key, so the fingerprint travels in its id
   it("changes when a credential file changes", async () => {
     assert.notEqual(
       await fingerprintOf(backend, { files: { "/app/google.json": "{}" } }),
@@ -301,8 +291,7 @@ describe("what the image is tagged by", () => {
   });
 });
 
-// A directory on this machine, built as it stands. The release is what the tree
-// holds and the context is what the deployment said belongs in it
+// The release is what the tree holds; the context is what the deployment named
 describe("building from a directory", () => {
   const local: AppSpec = { ...backend, repo: undefined, path: "/home/jvck/work/api" };
 
@@ -316,8 +305,7 @@ describe("building from a directory", () => {
     assert.equal(context, local.path);
   });
 
-  // Narrowing the release without narrowing this would hand BuildKit a
-  // node_modules the release says nothing about
+  // Narrowing the release alone would hand BuildKit an unrelated node_modules
   it("holds the context to what the app said ships", async () => {
     const { host } = await run({ ...local, include: ["src", "package.json"] });
     const written = host.files.get("backend.Dockerfile.dockerignore") ?? "";
@@ -335,8 +323,7 @@ describe("building from a directory", () => {
   });
 });
 
-// The agent this process holds reaches the build, which is where a manifest's
-// git dependencies are resolved. Without --ssh the mount has nothing behind it
+// Without --ssh the mount has nothing behind it, and git dependencies fail
 describe("forwarding the agent into the build", () => {
   it("asks docker for it when there is one", async () => {
     const { host } = await run(backend, { agent: true });
@@ -351,8 +338,7 @@ describe("forwarding the agent into the build", () => {
     assert.ok(!buildCommand(host.commands).includes("--ssh"));
   });
 
-  // It changes the Dockerfile, so an image built without one is not the image
-  // a build with one would produce
+  // It changes the Dockerfile, so the image differs from one built without it
   it("is part of what the image is tagged by", async () => {
     const without = await run(backend, { agent: false });
     const with_ = await run(backend, { agent: true });

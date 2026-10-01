@@ -7,6 +7,42 @@ on:
 
 jobs:
   check:
+    # 22.18 is the floor because that is where node reads a redkite.config.ts
+    # itself, and 24 because package.json allows it and nothing proved it. macOS
+    # is here for the local build path: buildOn "local" and --local run docker
+    # and the shell on this machine rather than the deploy host, and that is the
+    # half of the code a linux-only matrix never exercises on another platform
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [22, 24]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      # The type-level assertions are part of the suite, so this is not a lint
+      - run: npm run check
+
+      - run: npm test
+
+      # A publish cannot go out with an unfilled licence or an action.yml left
+      # pinned to the release before last, and this says so here rather than at
+      # the point somebody is trying to release
+      - run: node scripts/verifyRelease.mjs
+
+  coverage:
+    # One combination, because the number is the same everywhere and what this
+    # is for is having it in the log rather than gating on it
     runs-on: ubuntu-latest
 
     steps:
@@ -19,11 +55,4 @@ jobs:
 
       - run: npm ci
 
-      # The type-level assertions are part of the suite, so this is not a lint
-      - run: npm run check
-
-      - run: npm test
-
-      # A publish cannot go out with an unfilled licence, and this says so here
-      # rather than at the point somebody is trying to release
-      - run: node scripts/verifyRelease.mjs
+      - run: npm run coverage

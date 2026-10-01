@@ -5,9 +5,7 @@ import { dirname, join } from "node:path";
 import type { Host } from "./host.js";
 import { signalEverything, spawnCollect } from "./shell.js";
 
-// The same Host without a network in the way, for an environment that names no
-// bastion. Deploying to this machine and deploying to another one differ in
-// nothing but which of these the CLI constructs.
+// The same Host without a network in the way, for an environment with no bastion
 
 export type LocalOptions = { cache?: string; signal?: AbortSignal };
 
@@ -39,8 +37,7 @@ export async function localHost(options: LocalOptions = {}): Promise<Host> {
         signal: options.signal,
       }),
 
-    // The build is a grandchild of the shell that was spawned, and every child
-    // is a process group leader, so one signal reaches the whole tree
+    // Every child is a process group leader, so one signal reaches the whole tree
     stop: async (name) => signalEverything(name === "KILL" ? "SIGKILL" : "SIGTERM"),
 
     // Without the signal, so a stop cannot refuse the work it created

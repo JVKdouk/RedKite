@@ -6,7 +6,7 @@ import { envFileFor } from "./environment.js";
 import { healthcheck, type HealthDeps } from "./health.js";
 import { finalHost, type Host } from "./host.js";
 import { localHost } from "./localHost.js";
-import { silent, type Log } from "./log.js";
+import { silent, type Log, type Task } from "./log.js";
 import {
   defineStep,
   merge,
@@ -30,30 +30,21 @@ import { describeRef, describeRepo, type Source } from "./source.js";
 import { topologyFor, type AppTopology, type Topology } from "./topology.js";
 import type { AppSpec, Deployment } from "./types.js";
 
-// The runs redkite offers, and the steps it supplies to them. A deploy is
-// blue-green: bring the host up, build everything, move addresses, check,
-// revert or stop. A verify stops after the build and runs what the apps declare
-// instead of swapping, which is the same host and the same images without the
-// half of it that touches what is serving.
-//
-// Nothing here is privileged. Each of these is an ordinary step at an ordinary
-// point, and a deployment that registers its own at the same point replaces it.
+// Blue-green: bring the host up, build, move addresses, check, revert or stop. A verify stops after the build
 
 export type DeployOptions = {
   config: Deployment;
   environment: string;
-  // The machine the containers run on, and which now builds them too
+  // The machine the containers run on, and which builds them too
   host: Host;
   // One store per provider named by a ref in the config
   secrets: SecretStores;
-  // How the probe waits between attempts. Absent means a real wait, which is
-  // what everything but a test wants
+  // How the probe waits between attempts. Absent means a real wait
   health?: Omit<HealthDeps, "probe">;
   log?: Log;
   // Prints what each build wrote, line by line as it runs
   verbose?: boolean;
-  // Stops the run. Whatever command is in flight is killed, and the pipeline
-  // unwinds through its own failure path rather than through an exit
+  // Kills what is in flight, unwinding through the pipeline's own failure path
   signal?: AbortSignal;
 };
 
@@ -61,8 +52,7 @@ export async function deploy(options: DeployOptions): Promise<Finished> {
   return await start("deploy", options);
 }
 
-// The same host, the same services and the same images, stopping where a deploy
-// would start moving addresses. What runs instead is what each app declares
+// Stops where a deploy would start moving addresses, running the apps' own checks
 export async function verify(options: DeployOptions): Promise<Finished> {
   return await start("verify", options);
 }
@@ -82,15 +72,13 @@ async function start(run: Run, options: DeployOptions): Promise<Finished> {
     run,
   };
 
-  // A plugin's steps lead, so a snapshot listed as a plugin runs above the
-  // migration the deployment writes after it
+  // A plugin's steps lead, so a snapshot runs above the deployment's migration
   const added = [...pluginSteps(config.plugins), ...(config.steps ?? [])];
 
   return await runPipeline(run, merge(supplied(options), added), setting, options.signal);
 }
 
-// Every step redkite supplies, in the order the phases name. A run walks the
-// phases it has, so the ones it does not are never ordered in
+// A run walks the phases it has, so the rest are never ordered in
 function supplied(options: DeployOptions): AnyStep[] {
   return [
     defineStep("setup", prepare),
@@ -109,10 +97,10 @@ function supplied(options: DeployOptions): AnyStep[] {
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-// A deploy publishes the proxy on a port, and an environment written for verify
-// alone has no reason to name one. Checked before the run so the mistake lands
-// before a build rather than on a proxy nobody outside can reach
+// Checked before the run, so a verify-only environment fails before a build
 function assertPublishable(plan: Plan) {
+  // Without a proxy each app's port is the way in, and none is required
+  if (plan.config.proxy === false) return;
   if (environmentOf(plan.config, plan.environment)?.publicPort) return;
 
   throw new Error(
@@ -121,30 +109,31 @@ function assertPublishable(plan: Plan) {
   );
 }
 
-// The network and the services, which outlive a run and are only built when
-// they are missing. This used to overlap the builds, and now costs the round
-// trips it takes rather than nothing, which is what buys a setup step a host
-// it can rely on
+// Outlive a run and are built only when missing, so a setup step can rely on them
 async function prepare(input: Start, context: Context): Promise<Prepared> {
   const { docker, topology } = context;
 
   await docker.network.create(topology.network, topology.cidr);
+
+  // An earlier proxy would hold the public port with nothing left to stop it
+  if (context.config.proxy === false) {
+    await docker.container.stop(topology.router.container);
+    await docker.container.remove(topology.router.container);
+  }
+
   const services = await ensureServices(context);
 
   return { ...input, network: topology.network, services };
 }
 
-// Every image is built before anything is disturbed. A build failure has to
-// leave the running deployment exactly as it was, which is why this is a step
-// of its own rather than the first half of the swap
+// A step of its own, so a build failure leaves the running deployment untouched
 async function compile(
   input: Prepared,
   context: Context,
   verbose: boolean,
   signal?: AbortSignal,
 ): Promise<Built> {
-  // One checkout directory for every app, opened here so the build step owns
-  // its lifetime rather than the process
+  // Opened here, so the build step owns its lifetime rather than the process
   const here = buildsHere(context) ? await localHost({ signal }) : undefined;
 
   try {
@@ -154,9 +143,7 @@ async function compile(
   }
 }
 
-// Building here and deploying here are the same daemon, so shipping would be a
-// save and a load of an image that never moved. An app built from a path on
-// this machine has no say in it: the source is here, so the build is too
+// The same daemon both ends, so shipping would save and load an image that never moved
 function buildsHere(context: Context) {
   const environment = environmentOf(context.config, context.environment);
   if (!environment?.host?.bastion) return false;
@@ -172,14 +159,12 @@ async function release(
   const { docker, task, topology } = context;
   const apps = context.config.apps.map((app) => appOf(topology, app.name));
 
-  // Keyed by name rather than by index: appOf resolves the topology, and two
-  // lists walked in step is a bug waiting for someone to reorder one
+  // Keyed by name, since two lists walked in step breaks when one is reordered
   const environments = new Map(
     context.config.apps.map((app) => [app.name, app.environment ?? {}]),
   );
 
-  // Resolved now and handed over when the container is made. Nothing from the
-  // vault is in the image, so this is the only way the running process sees it
+  // Nothing from the vault is in the image, so this is how the process sees it
   const files = new Map(
     await Promise.all(
       context.config.apps.map(
@@ -188,8 +173,7 @@ async function release(
     ),
   );
 
-  // What has actually been moved, rather than what was going to be. A stop
-  // lands between two docker commands, and only this says which side of it
+  // A stop lands between two docker commands, and only this says which side
   const moved: AppTopology[] = [];
 
   try {
@@ -210,19 +194,24 @@ async function release(
       ),
     );
 
+    // With no proxy nothing holds traffic, so the app is down until the new one is up
+    const published = apps.filter((app) => app.published !== undefined);
+
+    if (published.length > 0) {
+      task.detail("stopping the ones whose ports are published");
+      await Promise.all(published.map((app) => docker.container.stop(app.retired)));
+    }
+
     task.detail("starting them");
     await Promise.all(apps.map((app) => docker.container.start(app.container)));
 
-    // Inside, because the swap is not over until this says so. A stop lands
-    // here more often than anywhere else: it is the longest part, and by now
-    // every address has already moved
+    // Inside, because the swap is not over until this says so
     const unhealthy = await checkAll(context, health);
 
     if (unhealthy.size > 0) {
       context.log.fail("Health checks failed, reverting");
 
-      // Before the revert, which gives the live name back to the container it
-      // retired. Asked after it, the logs would be the previous release's
+      // Before the revert, or the logs would be the previous release's
       await dumpLogs(context, apps, unhealthy);
       await Promise.all(apps.map((app) => revert(docker, topology, app)));
 
@@ -235,9 +224,7 @@ async function release(
       };
     }
   } catch (error) {
-    // Whatever ended this, the addresses have moved and something has to put
-    // them back. A stop is the usual one, so the revert runs on a host that
-    // has been told to stop: it is the abort that made this necessary
+    // The addresses have moved, so the revert runs on a host already told to stop
     if (moved.length > 0) {
       context.log.fail(`Putting ${moved.length} back where they were`);
       await putBack(context, moved);
@@ -255,9 +242,7 @@ async function release(
   };
 }
 
-// Through a host with the stop lifted, because the commands that undo a swap
-// cannot be refused by the same signal that interrupted it. One app failing to
-// go back must not stop the others, so each is settled on its own
+// Stop lifted, since undoing a swap cannot be refused by what interrupted it
 async function putBack(context: Context, moved: AppTopology[]) {
   const docker = new Docker(finalHost(context.host));
 
@@ -272,11 +257,9 @@ async function putBack(context: Context, moved: AppTopology[]) {
   await Promise.all(put);
 }
 
-// A build leaves its image on the host rather than sending one, so without this
-// every run adds a runtime image and a builder to a disk nobody is watching
+// Without this every run adds a runtime image and a builder to the disk
 async function finish(input: Released, context: Context): Promise<Finished> {
-  // What would be removed is what is serving, and the images are what a retry
-  // would be built from
+  // What would be removed is serving, and a retry would be built from those images
   if (!input.ok) return { ...input, removed: [], reclaimed: [] };
 
   const { docker, topology } = context;
@@ -300,21 +283,20 @@ function describe({ app, result }: Built0): BuiltApp {
 }
 
 async function checkAll(context: Context, health: Omit<HealthDeps, "probe">) {
-  const { docker, log, topology } = context;
+  const { docker, topology } = context;
 
   const results = await Promise.all(
     context.config.apps.map(async (app) => {
       const target = appOf(topology, app.name);
 
-      // A step of its own for each app, rather than lines said beside the swap:
-      // every attempt lands on it, and a crash log gives it a file
+      // A step each, so every attempt lands on it and a crash log gives it a file
       const deps: HealthDeps = {
         ...health,
         probe: async (container, url) => {
           const result = await docker.run(`exec ${container} curl -s ${url}`);
           return { code: result.code, output: result.stdout };
         },
-        task: log.step(`Health check of ${app.name}`),
+        task: context.task.step(`Health check of ${app.name}`),
       };
 
       const healthy = await healthcheck(target.container, target.port, app.health, deps);
@@ -322,28 +304,23 @@ async function checkAll(context: Context, health: Omit<HealthDeps, "probe">) {
     }),
   );
 
-  // The containers that failed, since what gets written out for each depends on
-  // whether it was one of them
+  // The containers that failed, since what is written out depends on it
   return new Set(results.filter((container): container is string => container !== undefined));
 }
 
-// Enough to hold a stack trace and what led up to it, not a day of access logs
+// Enough for a stack trace and what led up to it, not a day of access logs
 const LOG_TAIL = 200;
 
-// Every new container's, not only the ones that failed: a backend that never came
-// up is often explained by what the frontend says it could not reach. Each is a
-// step of its own, so the crash log gives it a file, and the one that failed its
-// check is marked failed, which is what puts its tail on the screen at the end
+// All of them: a backend that never came up often shows in the frontend's log
 async function dumpLogs(context: Context, apps: AppTopology[], unhealthy: Set<string>) {
   await Promise.all(
     apps.map(async (app) => {
-      const task = context.log.step(`Logs of ${app.name}`);
+      const task = context.task.step(`Logs of ${app.name}`);
       task.detail(`the last ${LOG_TAIL} lines of ${app.container}`);
 
       const result = await context.docker.container.logs(app.container, LOG_TAIL);
 
-      // Said, and left there. The revert still has to run, and logs that could
-      // not be read are no reason to leave a failed release serving
+      // Said and left there: unreadable logs are no reason to leave a release serving
       if (result.code !== 0) {
         task.fail(`could not read the logs of ${app.container}: ${result.stdout || result.stderr}`);
         return;
@@ -359,9 +336,7 @@ async function dumpLogs(context: Context, apps: AppTopology[], unhealthy: Set<st
   );
 }
 
-// The proxy is one of these, derived rather than listed. What each should be
-// is worked out in one place, so a plan reports drift against the same shape a
-// deploy converges to
+// Worked out in one place, so a plan reports drift against what a deploy converges to
 async function ensureServices(context: Context) {
   const planned = plannedServices(context.config, context.topology, context.run);
 
@@ -385,7 +360,7 @@ async function buildAll(
   verbose: boolean,
   here?: Host,
 ): Promise<Built0[]> {
-  const { config, log, topology } = context;
+  const { config, topology } = context;
   const environment = environmentOf(config, context.environment);
 
   if (!environment) throw new Error(`Unknown environment ${context.environment}`);
@@ -393,13 +368,11 @@ async function buildAll(
   return await Promise.all(
     config.apps.map(async (app) => {
       const placed = appOf(topology, app.name);
-      const source = await clone(app, placed, here ?? context.host, environment.branch, log);
-      const task = log.step(`Building ${app.name}`);
+      const source = await clone(app, placed, here ?? context.host, environment.branch, context.task);
+      const task = context.task.step(`Building ${app.name}`);
 
       try {
-        // Said before the reads rather than after them. Every ref is a call to
-        // the vault, and a step that has not spoken yet looks like one that is
-        // not doing anything
+        // Said before the reads: every ref is a call, and a silent step looks idle
         task.detail("reading its environment");
         const env = await readEnv(app.secrets, context.secrets);
 
@@ -414,8 +387,7 @@ async function buildAll(
           files,
           branch: environment.branch,
           environment: context.environment,
-          // Forwarded to the deploy host by the connection, so what this
-          // process holds is what the build there can reach
+          // Forwarded by the connection, so the build there reaches what this process holds
           agent: Boolean(process.env["SSH_AUTH_SOCK"]),
           detail: task.detail,
           output: task.line,
@@ -433,22 +405,21 @@ async function buildAll(
   );
 }
 
-// A step of its own, ahead of the build that reads it. A wrong branch or an
-// unreachable repository shows here, and folded into the build it was a detail
-// that scrolled past without ever saying what it fetched
+// Ahead of the build, so a wrong branch or unreachable repository shows here
 async function clone(
   app: AppSpec,
   placed: AppTopology,
   host: Host,
   branch: string,
-  log: Log,
+  // The build step, which the clone is drawn under
+  parent: Task,
 ): Promise<Source | undefined> {
-  // A directory is read where it is, not cloned, and the build still does that
+  // A directory is read where it is, not cloned
   if (!app.repo) return undefined;
 
   const ref = refOf(app, branch);
   const what = `${describeRepo(app.repo)} ${describeRef(ref)}`;
-  const task = log.step(`Cloning ${app.name}`);
+  const task = parent.step(`Cloning ${app.name}`);
 
   try {
     task.detail(what);
@@ -478,8 +449,7 @@ async function resolveFiles(app: AppSpec, stores: SecretStores) {
   return Object.fromEntries(entries);
 }
 
-// Move the running container out of the way without stopping it, so it keeps
-// answering on the retired address while the new one starts
+// Moved aside without stopping, so it answers on the retired address meanwhile
 async function retire(docker: Docker, topology: Topology, app: AppTopology) {
   await docker.container.stop(app.retired);
   await docker.container.remove(app.retired);
@@ -513,18 +483,17 @@ async function create(
   for (const volume of app.volumes) builder.volume(volume.volume, volume.mountPath);
   for (const [name, value] of Object.entries(environment)) builder.env(name, value);
 
+  // Only without a proxy: the retired container keeps its binding for a revert
+  if (app.published !== undefined) builder.port(app.published, app.port);
+
   await builder.create();
 }
 
-// Put the retired container back on the live address and its original name.
-// Answers with whether there was one: a first deploy has nothing behind it, and
-// the container that just failed is simply left where it was renamed to
+// Answers whether there was one: a first deploy has nothing behind it
 export async function revert(docker: Docker, topology: Topology, app: AppTopology) {
   await docker.container.stop(app.container);
 
-  // The slot may still hold what an earlier interrupted run put there, and a
-  // rename refuses rather than clobbers. Retiring clears its own slot the same
-  // way, and a revert that skipped this would leave the new container live
+  // A rename refuses rather than clobbers, so the slot is cleared first
   await docker.container.stop(app.failed);
   await docker.container.remove(app.failed);
 
@@ -550,8 +519,7 @@ async function cleanup(docker: Docker, app: AppTopology) {
   return removed;
 }
 
-// Every version of this app's images except the one that was just released,
-// including the builder a step before the swap ran in
+// All but the released one, including the builder a pre-swap step ran in
 async function reclaim(docker: Docker, app: BuiltApp) {
   const version = `${app.release}-${app.fingerprint}`;
   const reclaimed: string[] = [];

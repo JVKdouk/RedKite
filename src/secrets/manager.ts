@@ -6,22 +6,14 @@ import { join } from "node:path";
 
 import type { SecretStore } from "./refs.js";
 
-// Bitwarden Secrets Manager, which is not the password manager: different
-// service, different CLI, different credential. An access token opens a set of
-// projects rather than a personal vault, which is what a deploy wants, and it
-// is the whole of the authentication: nothing to log in to and nothing to
-// unlock, so there is no session to obtain or lose.
+// Bitwarden Secrets Manager: an access token is the whole authentication
 
-// Not an npm package. The password manager's CLI is one and redkite installs
-// it with npm; this one is a released binary, and the only thing on npm under
-// its name belongs to somebody else entirely. Pinned for the same reason the
-// other is: an unpinned CLI is a different program on a machine that has never
-// run a deploy before
+// Not on npm, unlike the other CLI: a released binary, pinned for the same reason
 const VERSION = "2.1.0";
 const RELEASES = "https://github.com/bitwarden/sdk-sm/releases/download";
 const CLIS = join(homedir(), ".cache", "redkite", "cli");
 
-// What the release calls each platform. Anything not here has to bring its own
+// What the release calls each platform; anything else brings its own
 const TARGETS: Record<string, string> = {
   "linux-x64": "x86_64-unknown-linux-gnu",
   "linux-arm64": "aarch64-unknown-linux-gnu",
@@ -32,7 +24,7 @@ const TARGETS: Record<string, string> = {
 };
 
 export type ManagerCredentials = {
-  // The access token, which is the only credential this service has
+  // The access token, the only credential this service has
   token: string;
   detail?: (message: string) => void;
   // Injected so the argv this builds is asserted on rather than trusted
@@ -47,8 +39,7 @@ export async function secretsManagerStore(
   const detail = credentials.detail ?? (() => {});
   const bws = credentials.bws ?? (await resolve(detail));
 
-  // Fetched once each. A second read of the same item during a deploy is the
-  // same answer, and this avoids a process per call site
+  // Fetched once each, avoiding a process per call site
   const cache = new Map<string, Promise<string>>();
 
   const fetch = async (id: string) => {
@@ -72,8 +63,7 @@ export async function secretsManagerStore(
   };
 }
 
-// The secret's value, which is the whole of what a ref points at. Everything
-// else the call answers with is about the item rather than in it
+// The value alone; the rest of the answer is about the item, not in it
 function valueOf(answer: string, id: string) {
   try {
     const parsed = JSON.parse(answer) as { value?: unknown };
@@ -108,9 +98,7 @@ async function binary(detail: (message: string) => void) {
   return await install(directory, installed, detail);
 }
 
-// Downloaded once per machine per pinned version, the way the other CLI is
-// installed once. The archive is a zip with one file in it, and unzip is the
-// one thing on every platform that reads one
+// Downloaded once per pinned version. The zip holds one file, and unzip is everywhere
 async function install(directory: string, installed: string, detail: (m: string) => void) {
   const target = TARGETS[`${process.platform}-${process.arch}`];
 
@@ -143,9 +131,7 @@ async function install(directory: string, installed: string, detail: (m: string)
   return installed;
 }
 
-// Nothing on stdin, and the output kept exactly as it came. The same reasoning
-// as the password manager's runner: a question nobody can answer is a deploy
-// that waits for ever
+// Nothing on stdin: a question nobody can answer is a deploy that waits for ever
 function run(file: string, args: string[], env: Record<string, string>) {
   return new Promise<string>((resolve_, reject) => {
     const child = spawn(file, args, {

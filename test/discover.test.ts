@@ -6,10 +6,9 @@ import { after, describe, it } from "node:test";
 
 import { discover, loadConfig, loadEnvironments } from "../src/cli/config.js";
 
-// A deployment is one file at the root of the project, and a deploy is as
-// likely to be run from a workspace inside it as from there.
+// One file at the project root, run as often from a workspace inside it
 
-// Every tree this makes, so the suite does not leave one behind per run
+// Every tree this makes, so the suite leaves none behind
 const made: string[] = [];
 
 after(async () => {
@@ -45,7 +44,7 @@ describe("finding the config", () => {
     assert.equal(discover(join(root, "apps", "web")), join(root, "redkite.config.ts"));
   });
 
-  // A project that is not written in TypeScript still has a deployment
+  // A project not written in TypeScript still has a deployment
   it("takes a config that is plain JavaScript", async () => {
     const root = await project(["redkite.config.mjs"]);
 
@@ -61,8 +60,7 @@ describe("finding the config", () => {
     );
   });
 
-  // package.json says where the deployment files live, for a repository that
-  // would rather not keep them at its root
+  // For a repository that would rather not keep them at its root
   it("takes the directory package.json points at", async () => {
     const root = await project({
       "package.json": JSON.stringify({ redkite: { directory: "deploy" } }),
@@ -73,10 +71,7 @@ describe("finding the config", () => {
     assert.equal(discover(join(root, "apps", "web")), join(root, "deploy", "redkite.config.ts"));
   });
 
-  // Saying where the files are and not putting them there is a mistake worth
-  // stopping for, rather than a reason to keep looking further up
-  // The directory holds redkite's files, and the deployment need not be one of
-  // them: it may hold only the environments, with the deployment above them
+  // A named directory must exist, but need not hold the deployment itself
   it("keeps looking when the directory it was pointed at holds no deployment", async () => {
     const root = await project({
       "package.json": JSON.stringify({ redkite: { directory: "deploy" } }),
@@ -113,8 +108,7 @@ describe("finding the config", () => {
   });
 });
 
-// The thing that differs between staging and production is a file, rather than
-// a key several levels down one literal
+// What differs between staging and production is a file, not a nested key
 describe("environments in files of their own", () => {
   const environment = (branch: string) =>
     `export default { branch: "${branch}", subnet: "10.0.0", publicPort: 80 };\n`;
@@ -153,8 +147,7 @@ describe("environments in files of their own", () => {
 });
 
 
-// A repository that keeps its environments somewhere the naming convention
-// would not find them says so once, in the manifest it already has
+// Said once, in the manifest the repository already has
 describe("environments package.json names", () => {
   const deployment = 'export default { project: "p", services: [], apps: [] };\n';
   const environment = (branch: string) =>
@@ -193,7 +186,7 @@ describe("environments package.json names", () => {
     ]);
   });
 
-  // One environment, two files, and nothing to say which of them is the one
+  // One environment, two files, and nothing to say which wins
   it("refuses an environment that is in both places", async () => {
     const root = await project({
       "package.json": JSON.stringify({
@@ -225,8 +218,7 @@ describe("environments package.json names", () => {
   });
 });
 
-// A file that was meant to be an environment and is named slightly differently
-// should be read and refused rather than passed over as though it were absent
+// Read and refused rather than passed over as though it were not there
 describe("which files beside the deployment are environments", () => {
   const env = (name: string) => `export default { branch: "${name}", subnet: "10.0.0", publicPort: 80 };\n`;
 
@@ -272,8 +264,7 @@ describe("which files beside the deployment are environments", () => {
     assert.deepEqual(Object.keys(await loadEnvironments(root)), []);
   });
 
-  // The name becomes part of an image tag, and a tag cannot hold a capital.
-  // Skipping it silently is what made the file look as though it was not there
+  // A tag cannot hold a capital, and skipping it silently hid the file
   it("refuses a name that cannot be one, rather than skipping it", async () => {
     const root = await project({ "redkite.Staging.config.ts": env("staging") });
 
@@ -290,9 +281,7 @@ describe("which files beside the deployment are environments", () => {
   });
 });
 
-// The directory package.json names is where redkite's files live, and the
-// deployment does not have to be one of them: a repository may keep the
-// deployment at its root and the environments together under one roof
+// The deployment may sit at the root with the environments under one roof
 describe("environments in the directory package.json names", () => {
   const env = `export default { branch: "staging", subnet: "10.0.0", publicPort: 80 };\n`;
   const points = JSON.stringify({ redkite: { directory: "deploy" } });
@@ -323,8 +312,7 @@ describe("environments in the directory package.json names", () => {
     assert.deepEqual(Object.keys(config.environments ?? {}), ["staging"]);
   });
 
-  // One place or the other, because two files for one environment is two
-  // answers and nothing here should pick between them
+  // One place or the other: two files for one environment is two answers
   it("refuses the same environment in both places", async () => {
     const root = await project({
       "package.json": points,
@@ -339,7 +327,7 @@ describe("environments in the directory package.json names", () => {
     );
   });
 
-  // Naming somewhere that does not exist is still a mistake worth stopping for
+  // Naming somewhere that does not exist is still worth stopping for
   it("refuses a directory that is not there", async () => {
     const root = await project({
       "package.json": JSON.stringify({ redkite: { directory: "gone" } }),

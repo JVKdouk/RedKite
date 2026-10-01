@@ -1,15 +1,7 @@
 import { defineDeployment, defineStep } from "../src/index.js";
 import type { Built, Finished, Prepared, Released, Start } from "../src/index.js";
 
-// Not a test: a file that only compiles if the wrong step is impossible to
-// write. Every @ts-expect-error below is an error if the compiler stops
-// catching what it names, so `npm run check` is the assertion.
-//
-// The type catches a phase nobody defined and a value a slot has not produced
-// yet. A misspelled slot and a name that is not kebab-case are caught when the
-// config loads instead, because a template literal cannot exclude them.
-
-// A step's input is decided by where it runs, not annotated at the call site
+// Not a test: `npm run check` is the assertion, one per @ts-expect-error below
 defineStep("setup:before:check", (input) => {
   const start: Start = input;
   return start;
@@ -40,8 +32,6 @@ defineStep("cleanup:after:notify", (input) => {
   return finished;
 });
 
-// Redkite's own four sit at ordinary points, and replacing one means answering
-// with what the rest of the run was written to receive
 defineStep("build", (input) => {
   const prepared: Prepared = input;
   return { ...prepared, apps: [] };
@@ -49,41 +39,32 @@ defineStep("build", (input) => {
 
 defineStep("cleanup", (input) => ({ ...input, removed: [], reclaimed: [] }));
 
-// A phase nobody defined
-// @ts-expect-error
+// @ts-expect-error  a phase nobody defined
 defineStep("provision:after:x", (input) => input);
 
-// @ts-expect-error
+// @ts-expect-error  and the same phase as a bare point
 defineStep("provision", (input) => input);
 
-// Nothing before the swap step has a release to read
-// @ts-expect-error
+// @ts-expect-error  nothing before the swap step has a release to read
 defineStep("swap:before:early", (input: Released) => input);
 
-// Replacing a redkite step means keeping its half of the contract: everything
-// after build was written expecting a Built
-// @ts-expect-error
+// @ts-expect-error  everything after build was written expecting a Built
 defineStep("build", (input) => input);
 
-// The phase that moves the addresses is named for what it does, and the name it
-// used to have is not a point
-// @ts-expect-error
+// @ts-expect-error  the phase was renamed, and the old name is not a point
 defineStep("deploy:before:migrate", (input) => input);
 
-// An environment is a file of its own. Two places to put one is two places for
-// them to disagree, so the config surface has only the one
 defineDeployment({
   project: "acme",
   services: [],
   apps: [],
-  // @ts-expect-error
+  // @ts-expect-error  an environment lives in a file of its own
   environments: { staging: { branch: "main", subnet: "10.0.0", publicPort: 80 } },
 });
 
 // And a deployment without them still compiles, because the loader fills them
 defineDeployment({ project: "acme", services: [], apps: [] });
 
-// The singular one is the deployment's own to declare: one environment, no file
 defineDeployment({
   project: "acme",
   services: [],

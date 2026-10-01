@@ -5,16 +5,12 @@ import { listRefs } from "./secrets/refs.js";
 import type { AnyStep } from "./pipeline.js";
 import type { Deployment, Environment } from "./types.js";
 
-// The one selected, from the one place worth looking. A deployment that carries
-// its own overrides every file, which is what makes it an override rather than
-// a default nobody can displace
+// A deployment carrying its own overrides every file
 export function environmentOf(config: Deployment, name: string) {
   return config.environment ?? config.environments?.[name];
 }
 
-// The selected environment's items folded into the apps they name, after each
-// app's own. Refs merge in order and the later key wins, so the deployment holds
-// what every environment shares and the environment holds what differs
+// Folded after each app's own, so the later key wins
 export function withEnvironment(config: Deployment, name: string): Deployment {
   const environment = environmentOf(config, name);
   if (!environment?.secrets && !environment?.files && !environment?.steps) return config;
@@ -36,18 +32,14 @@ export function withEnvironment(config: Deployment, name: string): Deployment {
 
   const folded = { ...config, apps, steps: steps ? stepsWith(config, steps) : config.steps };
 
-  // What was folded in leaves the environment, so folding it again adds nothing
-  // and a caller that already did it can hand the result on to one that will
+  // Folding twice adds nothing, so a caller can hand the result on
   if (config.environment) return { ...folded, environment: rest };
   return { ...folded, environments: { ...config.environments, [name]: rest } };
 }
 
-// A step at a point the deployment already fills replaces it for this
-// environment, where it stood. One only the environment has leads, the way a
-// plugin's does, so a snapshot added here still runs above the shared migration
+// A shared point is replaced in place; a new one leads, like a plugin's
 function stepsWith(config: Deployment, given: AnyStep[]) {
-  // Before the replacement map, which would otherwise keep the last of two and
-  // drop the other without a word
+  // Before the replacement map, which would keep one of two without a word
   assertSteps(given);
 
   const shared = config.steps ?? [];
@@ -59,14 +51,12 @@ function stepsWith(config: Deployment, given: AnyStep[]) {
     ...shared.map((step) => replacing.get(step.point) ?? step),
   ];
 
-  // A plugin fills points too, and one the environment lands on is the same
-  // collision defineDeployment refuses
+  // A plugin fills points too, and landing on one is the same collision
   assertSteps([...pluginSteps(config.plugins), ...steps]);
   return steps;
 }
 
-// An environment file does not import the deployment, so an app name there
-// cannot be checked when it compiles. A typo would otherwise read nothing
+// An environment file does not import the deployment, so a typo reads nothing
 function assertNamesApps(config: Deployment, environment: string, names: string[]) {
   const apps = new Set(config.apps.map((app) => app.name));
   const unknown = names.filter((name) => !apps.has(name));
@@ -78,10 +68,7 @@ function assertNamesApps(config: Deployment, environment: string, names: string[
   );
 }
 
-// Identity, but it pins the type so a missing health predicate fails to
-// compile. Environments are excluded rather than merely unused: each lives in
-// a redkite.<name>.config.ts of its own, and a second place to put one is a
-// second place for them to disagree
+// Pins the type, so a missing health predicate fails to compile
 export function defineDeployment<const T extends Deployment & { environments?: never }>(
   config: T,
 ): T {
@@ -90,21 +77,18 @@ export function defineDeployment<const T extends Deployment & { environments?: n
   assertRoutesResolvable(config);
   assertDirsRelative(config);
   assertUniquePlugins(config);
-  // Together, because a plugin's step and the deployment's own share the same
-  // points and two of them at one point is the collision worth catching
+  // Together, because two steps at one point is the collision worth catching
   assertSteps([...pluginSteps(config.plugins), ...(config.steps ?? [])]);
   return config;
 }
 
-// Identity, for the environment a redkite.<name>.config.ts holds. It pins the
-// type the same way defineDeployment does, so a missing subnet fails to compile
+// Pins the type the same way, so a missing subnet fails to compile
 export function defineEnvironment<const T extends Environment>(environment: T): T {
   if (environment.steps) assertSteps(environment.steps);
   return environment;
 }
 
-// Registering one twice is either a mistake or two configurations of the same
-// thing, and neither is something to pick a winner for
+// Registering one twice is a mistake or two configs, and neither has a winner
 function assertUniquePlugins(config: Deployment) {
   const seen = new Set<string>();
 
@@ -117,8 +101,7 @@ function assertUniquePlugins(config: Deployment) {
   }
 }
 
-// Cloned or already here, and the two are built differently enough that
-// guessing between them is worse than being told
+// Cloned or already here, and guessing between them is worse than being told
 function assertOneSource(config: Deployment) {
   for (const app of config.apps) {
     if (app.repo && app.path) {
@@ -129,8 +112,7 @@ function assertOneSource(config: Deployment) {
       throw new Error(`${app.name} names no source, so give it a repo to clone or a path to build`);
     }
 
-    // A clone is whatever the repository holds, so there is nothing here to
-    // narrow and an include would quietly do nothing
+    // A clone is whatever the repository holds, so an include would do nothing
     if (app.include && !app.path) {
       throw new Error(`${app.name} says what to include, but is cloned rather than built from a path`);
     }
@@ -149,8 +131,7 @@ function assertOneSource(config: Deployment) {
   }
 }
 
-// A dir is joined onto /app inside the image, so an absolute one would render
-// a path with two slashes and a climbing one would leave the checkout
+// Joined onto /app, so an absolute dir doubles a slash and a climbing one escapes
 function assertDirsRelative(config: Deployment) {
   for (const app of config.apps) {
     const dir = app.dir;
@@ -171,9 +152,7 @@ function assertUniqueNames(config: Deployment) {
   const duplicate = names.find((name, i) => names.indexOf(name) !== i);
   if (duplicate) throw new Error(`Duplicate name in deployment: ${duplicate}`);
 
-  // The proxy is derived rather than listed, and it already has this name. A
-  // service claiming it is a second container on the first one's name, which
-  // nothing downstream can tell apart
+  // The proxy already has this name, and a second container on it is indistinguishable
   if (!names.includes(PROXY)) return;
 
   throw new Error(
@@ -182,15 +161,30 @@ function assertUniqueNames(config: Deployment) {
   );
 }
 
-// Two apps on the same route means one of them is unreachable, and which one
-// depends on nginx location precedence rather than on anything written here
+// Two apps on one route leaves nginx precedence to decide which is unreachable
 function assertRoutesResolvable(config: Deployment) {
+  // Without a proxy nothing reads a route, so one written reads as a way in
+  if (config.proxy === false) {
+    const routed = config.apps.find((app) => app.route !== undefined);
+    if (!routed) return;
+
+    throw new Error(
+      `${routed.name} has a route, and this deployment runs no proxy to resolve it. ` +
+        "Its port is published by the environment's ports instead",
+    );
+  }
+
+  const unrouted = config.apps.find((app) => app.route === undefined);
+  if (unrouted) {
+    throw new Error(`${unrouted.name} has no route, and the proxy resolves every app by one`);
+  }
+
   const routes = config.apps.map((app) => app.route);
   const duplicate = routes.find((route, i) => routes.indexOf(route) !== i);
   if (duplicate) throw new Error(`Two apps share the route ${duplicate}`);
 
   for (const app of config.apps) {
-    if (app.route.startsWith("/")) continue;
+    if (app.route?.startsWith("/")) continue;
     throw new Error(`Route for ${app.name} must start with a slash`);
   }
 }

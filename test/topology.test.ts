@@ -2,11 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import config, { authored } from "./deployment.js";
-import { defineDeployment, topologyFor } from "../src/index.js";
+import { defineDeployment, topologyFor, type Deployment, type Environment } from "../src/index.js";
 
-// Every name and address a deployment runs on, written out rather than
-// derived, so the test fails if the derivation ever starts answering
-// differently. Two of these colliding is a deploy that takes an app down
+// Written out rather than derived, so a changed derivation fails here
 const TODAY = {
   network: "acme-staging-network",
   cidr: "172.255.0.0/16",
@@ -20,9 +18,7 @@ const TODAY = {
   backRetiredAddress: "172.255.0.23",
   backCurrentAddress: "172.255.0.24",
   backLogsVolume: "acme-staging-backend-logs",
-  // The package managers' own caches and Next's, and nothing holding
-  // node_modules: dropping one of these makes a build slower, and dropping one
-  // that held the modules makes it fail
+  // No node_modules cache: a dropped mount that held the modules fails the build
   caches: [
     "backend-staging-yarn-cache",
     "backend-staging-npm-cache",
@@ -134,15 +130,14 @@ describe("topology", () => {
       assert.equal(moved?.retiredAddress, before.retiredAddress);
     }
 
-    // Services keep their block, so appending an app cannot renumber redis
+    // Services keep their block, so appending an app renumbers nothing
     assert.equal(
       after.services.find((service) => service.name === "redis")?.address,
       TODAY.redisAddress,
     );
   });
 
-  // dir is joined onto /app in the image, so anything but a relative path
-  // renders a Dockerfile that reads somewhere the checkout is not
+  // Joined onto /app, so anything but a relative dir reads somewhere else
   it("rejects a dir that is not a path inside the repository", () => {
     const withDir = (dir: string) => ({
       ...authored,
@@ -156,8 +151,7 @@ describe("topology", () => {
     assert.doesNotThrow(() => defineDeployment(withDir("apps/web")));
   });
 
-  // Cloned or already here. The two are built differently enough that guessing
-  // between them is worse than being told
+  // Cloned or already here, and guessing between them is worse than being told
   it("rejects an app naming both a repo and a path", () => {
     const both = {
       ...authored,
@@ -191,8 +185,7 @@ describe("topology", () => {
     assert.doesNotThrow(() => defineDeployment(local));
   });
 
-  // A clone is whatever the repository holds, so an include there would be a
-  // line in the config that quietly does nothing
+  // A clone is whatever the repository holds, so an include does nothing
   it("rejects an include on an app that is cloned", () => {
     const narrowed = {
       ...authored,
@@ -215,8 +208,7 @@ describe("topology", () => {
     assert.throws(() => defineDeployment(empty), /includes nothing/);
   });
 
-  // A branch is tracked and a tag or a commit is pinned. Two of them named at
-  // once is two different commits, and picking one is not this file's to do
+  // Two at once is two commits, and picking one is not this file's to do
   it("rejects an app naming more than one thing to build from", () => {
     const both = (over: Record<string, string>) => ({
       ...authored,
@@ -229,8 +221,7 @@ describe("topology", () => {
     assert.doesNotThrow(() => defineDeployment(both({ branch: "main" })));
   });
 
-  // The proxy is derived rather than listed, and it already has this name.
-  // Two containers on one name is something nothing downstream can tell apart
+  // The proxy already has this name, and two containers on one is indistinguishable
   it("rejects a service called what the derived proxy is called", () => {
     const clashing = {
       ...authored,
@@ -259,8 +250,7 @@ describe("topology", () => {
   });
 });
 
-// A database or a legacy service the apps must resolve, whose address is what
-// differs between environments
+// A service the apps resolve whose address differs between environments
 describe("extra hosts a deployment declares", () => {
   const withHosts = (extraHosts: Record<string, string>) =>
     topologyFor(
@@ -283,8 +273,7 @@ describe("extra hosts a deployment declares", () => {
     );
   });
 
-  // A name that already resolves to a container in this deployment would send
-  // its traffic somewhere else, and the deploy would look like it worked
+  // It would send a container's traffic elsewhere and still look like it worked
   it("refuses a name the deployment already resolves", () => {
     assert.throws(
       () => withHosts({ "acme-staging-backend": "10.9.9.9" }),
@@ -303,8 +292,7 @@ describe("extra hosts a deployment declares", () => {
 });
 
 
-// A deployment with one environment and no reason to keep it in a file. Two of
-// them is two files, which is what the plural key is for
+// One environment needs no file; two is what the plural key is for
 describe("an environment the deployment carries", () => {
   const inline = {
     ...authored,
@@ -328,7 +316,7 @@ describe("an environment the deployment carries", () => {
     assert.ok(derived.apps.every((app) => app.container.includes("-production-")));
   });
 
-  // An override, not a default: a file it disagrees with does not win
+  // An override, not a default
   it("overrides the files beside the deployment", () => {
     const both = { ...config, environment: inline.environment };
 
@@ -339,5 +327,70 @@ describe("an environment the deployment carries", () => {
   it("is what a deployment without one falls back from", () => {
     assert.equal(topologyFor(config, "staging").branch, "staging");
     assert.throws(() => topologyFor(config, "nowhere"), /Unknown environment/);
+  });
+});
+
+// Per environment, since two on one host cannot hold the same port
+describe("a deployment with no proxy", () => {
+  const staging: Environment = { branch: "staging", subnet: "172.255.0", ports: { backend: 3001 } };
+
+  const proxyless = (environment: Environment = staging) =>
+    ({
+      ...config,
+      proxy: false,
+      apps: config.apps.map((app) => ({ ...app, route: undefined })),
+      environments: { staging: environment },
+    }) satisfies Deployment;
+
+  const appNamed = (deployment: Deployment, name: string) => {
+    const app = topologyFor(deployment, "staging").apps.find((item) => item.name === name);
+    assert.ok(app, `no ${name}`);
+    return app;
+  };
+
+  it("publishes the port the environment gives an app", () => {
+    assert.equal(appNamed(proxyless(), "backend").published, 3001);
+  });
+
+  it("publishes nothing for an app the environment gives no port", () => {
+    assert.equal(appNamed(proxyless(), "frontend").published, undefined);
+  });
+
+  it("refuses ports while the deployment runs a proxy, which is the way in", () => {
+    const routed = { ...config, environments: { staging: { ...staging, publicPort: 4000 } } } satisfies Deployment;
+    assert.throws(() => topologyFor(routed, "staging"), /runs a proxy.*proxy: false/);
+  });
+
+  it("refuses a publicPort, since there is no proxy to publish on it", () => {
+    assert.throws(() => topologyFor(proxyless({ ...staging, publicPort: 4000 }), "staging"), /names a publicPort/);
+  });
+
+  it("refuses a port for an app the deployment does not have", () => {
+    assert.throws(
+      () => topologyFor(proxyless({ ...staging, ports: { worker: 4001 } }), "staging"),
+      /ports for worker.*frontend, backend/,
+    );
+  });
+
+  it("refuses something that is not a port", () => {
+    assert.throws(() => topologyFor(proxyless({ ...staging, ports: { backend: 70000 } }), "staging"), /not a port/);
+    assert.throws(() => topologyFor(proxyless({ ...staging, ports: { backend: 30.5 } }), "staging"), /not a port/);
+  });
+
+  it("refuses two apps on one host port", () => {
+    assert.throws(
+      () => topologyFor(proxyless({ ...staging, ports: { frontend: 3001, backend: 3001 } }), "staging"),
+      /both frontend and backend on 3001/,
+    );
+  });
+
+  // Nothing would read a route, and one written anyway reads as a way in
+  it("refuses a route when there is no proxy to resolve it", () => {
+    assert.throws(() => defineDeployment({ ...authored, proxy: false }), /has a route.*no proxy/);
+  });
+
+  it("refuses an app with no route while there is a proxy", () => {
+    const unrouted = { ...authored, apps: authored.apps.map((app) => ({ ...app, route: undefined })) };
+    assert.throws(() => defineDeployment(unrouted), /has no route/);
   });
 });

@@ -6,8 +6,7 @@ import { after, describe, it } from "node:test";
 
 import { signalEverything, spawnCollect, stillRunning } from "../src/index.js";
 
-// A build is not the process the shell started, it is that process's child. A
-// stop that only signals what it spawned leaves the build running.
+// A build is the shell's grandchild, which signalling the child alone misses
 
 const made: string[] = [];
 
@@ -15,8 +14,7 @@ after(async () => {
   await Promise.all(made.map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-// A command whose real work happens in a grandchild, which is the shape of
-// every docker build this runs. The grandchild says where to find it
+// The shape of every docker build, with the grandchild saying where to find it
 async function nested() {
   const dir = await mkdtemp(join(tmpdir(), "redkite-shell-"));
   made.push(dir);
@@ -62,9 +60,7 @@ describe("stopping a command", () => {
     assert.ok(await until(async () => !(await alive(grandchild))), "it survived");
   });
 
-  // Aborting only stops the next command being issued. What is already running
-  // is stopped by signalling it, because over ssh it is on another machine and
-  // killing the client here would leave it going with nothing able to reach it
+  // What runs is stopped by signalling it, since over ssh it is elsewhere
   it("leaves a running command alone when the signal aborts", async () => {
     const { command, started } = await nested();
     const stopping = new AbortController();
@@ -91,8 +87,7 @@ describe("stopping a command", () => {
     );
   });
 
-  // What a host signals when it is asked to stop, and the count is what a
-  // caller waits on: nothing may leave while it is above zero
+  // The count is what the caller waits on; nothing leaves above zero
   it("signals every group and says how many are left", async () => {
     const { command, started } = await nested();
     const running = spawnCollect("sh", ["-c", command]);
@@ -109,8 +104,7 @@ describe("stopping a command", () => {
     assert.equal(stillRunning(), 0, "and is not counted once it has gone");
   });
 
-  // The promise is the proof. Settling it on the abort rather than on the
-  // process ending is what let a stopped deploy exit with a build still running
+  // Settling on the abort is what let a stopped deploy exit mid-build
   it("does not answer until the process has actually gone", async () => {
     const { command, started } = await nested();
     const stopping = new AbortController();

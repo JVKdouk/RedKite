@@ -758,3 +758,97 @@ lines, a directory with the access log off and errors at warn, and the container
 output with per-location lines) pass `nginx -t`, with the upstream hosts pointed
 at loopback and the log directory at a scratch one. Not checked: a real proxy
 container writing into a bind-mounted host directory.
+
+## Steps inside steps, and no GH label
+
+- [x] `Task.step(label)`, required, so every log there is draws a step's own work
+      under it or does not compile. The CLI's plain writer, the view, the crash
+      recording and every fake in the tests carry it
+- [x] Cloning and building open under the `build` phase, each health check and
+      each container's logs under `swap`. They were opened on the log itself, so
+      they sat beside the phase they belonged to
+- [x] The view keeps each step's parent and depth, indents a row and its lines
+      two columns a level, and the summary left on the screen does the same
+- [x] Whatever a child does counts as its parent speaking, and a parent with a
+      child still running never says quiet. `build` said `quiet 27s` while every
+      app under it was compiling, which is what prompted this
+- [x] Crash logs record depth, and indent the step index in run.log
+- [x] The GH label is gone, and the tag mechanism with it: `tag()`, `untagged()`,
+      the pill in the view and the bracketed form everywhere else. A GitHub
+      repository is named by its path alone, anything else by host and path
+- [x] README: a frame rendered from the real view with nested steps, and a word
+      on why a parent does not say quiet
+
+Tests for nesting in the view, the summary, the crash log and the deploy, and for
+`spoken`, which is exported so the one piece of it with no screen can be checked.
+Each change reverted to check a test fails: building, cloning, health checks and
+logs opened outside their phase, quiet said over a running child, a row or its
+lines not indented, the viewer putting everything at the top, a child's speaking
+not reaching its parent, crash logs losing depth, and GitHub named with its host.
+
+Not covered by a test: the plain writer's indentation, since it writes straight to
+process.stdout.
+
+Not done: shutting a finished phase does not hide the steps under it. They stay
+as rows of their own, indented.
+
+## Proxy logs to files and to docker at once
+
+- [x] A directory is an addition to docker, not a replacement for it. With one,
+      nginx writes `access_log` and `error_log` to the file and to the
+      container's output side by side, which is what docker logs reads
+- [x] `docker: false` keeps the files alone
+- [x] `access` and `error` name the files in the directory, each environment's
+      own unless named. `access: false` turns the access log off everywhere
+- [x] `errors` is now `level`, since `error` names a file. Nothing had shipped
+      with the old name
+- [x] Access and error log lines are identified by where they write, so a
+      second destination is kept beside the first. They used to be collapsed to
+      the last one like any other directive, which is why only one could exist.
+      `access_log off;` replaces every destination, and a destination after it
+      replaces the off
+- [x] A line written in `server` adds a destination rather than replacing ours
+- [x] Refused rather than rendered: a file name with no directory, a file name
+      that is a path, `docker: false` with no directory, and both logs naming one
+      file
+
+10 tests replace the logging ones. Each behaviour reverted to check a test fails:
+a directory replacing docker for either log, docker false ignored, either name
+ignored, access false ignored, the level ignored for docker, two destinations
+collapsed, a hand-written off leaving the others, and each of the four refusals.
+
+Run for real with nginx 1.30.4 as a process, its stdout and stderr standing in
+for what docker reads: with a directory and docker on, a request's access line
+landed in the file and on stdout, and its upstream errors in the file and on
+stderr. With docker off and the files named, both landed in the named files and
+nothing reached stdout or stderr. Not run: the official image in a container with
+the directory bind-mounted.
+
+## Running without a proxy
+
+- [x] `proxy: false` on the deployment runs no proxy. No nginx is planned, and a
+      proxy an earlier deploy started is stopped and removed at setup, so it does
+      not go on holding the public port
+- [x] `ports` on the environment, keyed by app name, publishes an app's port on
+      the deploy host with `-p`. On the environment because two environments on
+      one host cannot hold one port. An app with no entry is not published
+- [x] The swap stops a published app's retired container just before the new one
+      starts, since a host port is held by one container at a time. That app is
+      down until the new one is up: without a proxy there is nothing to hold
+      traffic. An unpublished app swaps the way it always did
+- [x] A revert needs nothing new: it stops the new container and starts the
+      retired one, which kept its own port binding
+- [x] `publicPort` is not required without a proxy
+- [x] Refused: ports beside a proxy, a publicPort without one, a port for an app
+      that is not there, a number that is not a port, and two apps on one port.
+      A route is required with a proxy and refused without one, since nothing
+      would read it, so `route` is optional on an app now
+- [x] `plan` says what is published, a port line per app, and renders no nginx
+
+17 tests. Each behaviour reverted to check a test fails: no -p, the old container
+still running when the new one starts, every old container stopped, a leftover
+proxy kept, a publicPort still required, a proxy still planned, each of the five
+port refusals, topology dropping the port, and both route refusals.
+
+Not covered by a test: plan's output, which is written straight to stdout. Not run
+against a real host: a published port changing hands during a swap.

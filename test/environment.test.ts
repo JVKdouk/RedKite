@@ -3,8 +3,7 @@ import { describe, it } from "node:test";
 
 import { dockerEnv } from "../src/environment.js";
 
-// A vault holds dotenv. Docker's env file is a different format that happens to
-// look like it, and the difference is silent: the value simply arrives wrong.
+// Docker's env file only looks like dotenv, and the difference is silent
 
 describe("handing an environment to docker", () => {
   it("takes the quotes off, because docker would keep them", () => {

@@ -5,14 +5,12 @@ import {
   elapsed,
   emptyModel,
   keysOf,
-  paintTags,
   render,
   type Model,
   type Step,
 } from "./screen.js";
 
-// The terminal half: raw keys in, a frame out on a timer. Everything it decides
-// lives in screen.ts, so this file is only the parts a test cannot run.
+// The terminal half: raw keys in, a frame out on a timer. Decisions live in screen.ts
 
 const FRAME_MS = 100;
 const ALTERNATE_ON = "\u001b[?1049h\u001b[?25l";
@@ -21,17 +19,15 @@ const HOME = "\u001b[H";
 const CLEAR_LINE = "\u001b[K";
 const CLEAR_BELOW = "\u001b[J";
 
-// A build prints tens of thousands of lines and only the tail is ever read
+// A build prints tens of thousands of lines and only the tail is read
 const KEPT = 2000;
 
 export type Viewer = Log & {
-  // Leaves the alternate screen and prints what happened, since nothing drawn
-  // inside it survives
+  // Leaves the alternate screen, since nothing drawn inside it survives
   close(): void;
 };
 
-// A pty whose size nobody set answers 0 rather than nothing, and a view one row
-// tall can only ever show the step the cursor is on
+// A pty whose size nobody set answers 0, and one row shows only the cursor
 const ROWS = 24;
 const COLUMNS = 80;
 
@@ -41,8 +37,7 @@ const sizeOf = (stream: NodeJS.WriteStream) => ({
 });
 
 export type ViewerOptions = {
-  // Called on the quit key. The caller decides what asking twice means, since
-  // the same request arrives as a signal when there is no view
+  // The caller decides what asking twice means, since it also arrives as a signal
   onQuit?: () => void;
 };
 
@@ -51,8 +46,7 @@ export function createViewer(
   input: NodeJS.ReadStream,
   options: ViewerOptions = {},
 ): Viewer {
-  // NO_COLOR is a standing instruction rather than a preference to re-ask
-  // about, and a terminal that took the alternate screen still may not paint
+  // NO_COLOR is a standing instruction, and the alternate screen may not paint
   const colour = !process.env["NO_COLOR"] && stream.isTTY === true;
   const size = sizeOf(stream);
   let model = emptyModel(size.rows, size.columns, Date.now());
@@ -90,8 +84,7 @@ export function createViewer(
 
   const onKey = (data: string) => {
     for (const key of keysOf(data)) {
-      // Not a return: two presses in one read are two asks, and the second one
-      // is what hardens the signal the first one sent
+      // Not a return: two presses in one read are two asks, and the second hardens it
       if (key === "quit") quit();
       else change((current) => apply(current, key));
     }
@@ -112,29 +105,30 @@ export function createViewer(
     input.pause();
 
     stream.write(ALTERNATE_OFF);
-    // The alternate screen takes every frame with it, so the run has to be
-    // written again on the screen the person keeps
-    for (const line of summary(model, colour)) stream.write(`${line}\n`);
+    // The alternate screen takes every frame, so the run is written again after
+    for (const line of summary(model)) stream.write(`${line}\n`);
   };
 
-  // What a second press means is not the view's to decide: the same key
-  // arrives as a signal when there is no view, and one answer serves both
+  // Not the view's to decide: the same key arrives as a signal without one
   const quit = () => options.onQuit?.();
 
   process.once("exit", () => open && stream.write(ALTERNATE_OFF));
 
-  const step = (label: string): Task => {
+  const step = (label: string, parent?: number): Task => {
     let index = 0;
 
     change((current) => {
       index = current.steps.length;
+      const above = parent === undefined ? undefined : current.steps[parent];
 
       const started: Step = {
         label,
         started: Date.now(),
         state: "running",
         lines: [],
-        // The one running is the one being read, unless the reader said no
+        parent,
+        depth: above ? above.depth + 1 : 0,
+        // The one running is the one being read, unless the reader said otherwise
         expanded: !current.minimal,
         held: false,
         offset: 0,
@@ -142,7 +136,7 @@ export function createViewer(
 
       return {
         ...current,
-        steps: [...current.steps, started],
+        steps: spoken([...current.steps, started], parent, Date.now()),
         cursor: current.following ? index : current.cursor,
       };
     });
@@ -150,11 +144,14 @@ export function createViewer(
     const edit = (change_: (step: Step) => Step) =>
       change((current) => ({
         ...current,
-        steps: current.steps.map((item, at) => (at === index ? change_(item) : item)),
+        steps: spoken(
+          current.steps.map((item, at) => (at === index ? change_(item) : item)),
+          parent,
+          Date.now(),
+        ),
       }));
 
-    // A finished step shuts, so the list stays a list. One the reader opened by
-    // hand stays open: it is being read, and closing it would move the screen
+    // A finished step shuts; one the reader opened stays open, being read
     const settle = (state: Step["state"], note?: string) =>
       edit((item) => ({
         ...item,
@@ -165,8 +162,7 @@ export function createViewer(
         expanded: item.held,
       }));
 
-    // Both mark the step as having spoken, which is what tells a working step
-    // from a wedged one on the row itself
+    // Both mark the step as having spoken, which is what quiet reads
     return {
       detail: (message) => edit((item) => ({ ...item, detail: message, spoke: Date.now() })),
       line: (message) =>
@@ -177,6 +173,7 @@ export function createViewer(
         })),
       done: (message) => settle("done", message),
       fail: (message) => settle("failed", message),
+      step: (child) => step(child, index),
     };
   };
 
@@ -190,26 +187,40 @@ export function createViewer(
   });
 }
 
-// One line per step and whatever was said outside them, which is the record a
-// person scrolls back to after the deploy is over
-function summary(model: Model, colour: boolean): string[] {
+// A phase whose work is in its children would otherwise read as silent
+export function spoken(steps: Step[], from: number | undefined, at: number) {
+  let parent = from;
+
+  while (parent !== undefined) {
+    const above = steps[parent];
+    if (!above) break;
+
+    steps[parent] = { ...above, spoke: at };
+    parent = above.parent;
+  }
+
+  return steps;
+}
+
+// The record a person scrolls back to after the deploy is over
+function summary(model: Model): string[] {
   const rows = model.steps.map((step) => {
     const glyph = step.state === "done" ? "✔" : step.state === "failed" ? "✘" : "·";
     const said = step.note ? `: ${step.note}` : "";
     const took = elapsed(step.ended ?? model.now, step.started);
 
-    return paintTags(`${glyph} ${step.label}${said} (${took})`, colour);
+    // Indented under the step it ran inside, the same as it was drawn
+    return `${"  ".repeat(step.depth)}${glyph} ${step.label}${said} (${took})`;
   });
 
   return [
     ...rows,
-    ...model.messages.map((message) => paintTags(message.text, colour)),
+    ...model.messages.map((message) => message.text),
     ...whatFailed(model),
   ];
 }
 
-// The end of what the step that failed was saying. The reason a build stopped
-// is in its own output, and the alternate screen takes every frame with it
+// Why a build stopped is in its own output, which the alternate screen took
 const TAIL = 20;
 
 function whatFailed(model: Model) {

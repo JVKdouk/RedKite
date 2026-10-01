@@ -9,15 +9,12 @@ import { prepareSource } from "./source.js";
 import type { AppTopology } from "./topology.js";
 import type { AppSpec } from "./types.js";
 
-// One build. The host clones the repository, renders the pipeline as a
-// Dockerfile, and hands it to the BuildKit inside the daemon that will run the
-// container, so the image is finished where it is needed and never moves.
+// Built by the BuildKit inside the daemon that will run it, so the image never moves
 
 export type BuildContext = {
   host: Host;
   docker: Docker;
-  // Set when the image is built somewhere other than where it will run. The
-  // build goes to the daemon above, and what it produced is streamed to this one
+  // Set when the image is built elsewhere, and streamed to this daemon after
   deliver?: { host: Host; docker: Docker };
   // Contents of the .env the image ships with
   env: string;
@@ -25,36 +22,29 @@ export type BuildContext = {
   files: Record<string, string>;
   branch: string;
   environment: string;
-  // Whether an agent is there to forward into the build. A dependency fetched
-  // over ssh needs one, and asking for a mount nothing is behind fails outright
+  // Asking for a mount nothing is behind fails the build outright
   agent?: boolean;
   detail?: (message: string) => void;
   // Prints what the build itself wrote, line by line as it runs
   output?: (line: string) => void;
 };
 
-// Bumped when the pipeline changes shape without the config changing. The tag
-// below is what tells a host it already holds an image, and a host that trusts
-// the commit alone serves the last pipeline's output forever
+// Bumped when the pipeline changes shape, or a host serves the old output forever
 const PIPELINE = "6";
 
 export type BuildResult = {
   release: string;
   // Everything that shaped the image, not just the commit it was built from
   fingerprint: string;
-  // Versioned name the image carries, which is what the next deploy recognises
+  // Versioned name the image carries, which the next deploy recognises
   tag: string;
-  // The builder stage, kept as an image of its own. The runtime image holds
-  // only what the app compiled to, so this is the one place a step can run the
-  // app's own toolchain
+  // Kept as an image of its own: the only place a step gets the app's toolchain
   builderTag: string;
   // True when the host already held this exact image and nothing was rebuilt
   cached: boolean;
 };
 
-// The app's own, or the environment's branch when it names none. A branch is
-// the only thing an environment can say, because a tag or a commit is a claim
-// about one repository and an environment spans every app
+// An environment can only say a branch, since a tag pins one repository
 export function refOf(app: AppSpec, branch: string): Ref {
   if (app.tag) return { kind: "tag", name: app.tag };
   if (app.commit) return { kind: "commit", name: app.commit };
@@ -62,8 +52,7 @@ export function refOf(app: AppSpec, branch: string): Ref {
   return { kind: "branch", name: app.branch ?? branch };
 }
 
-// Where the app's source comes from, cloned or read. Its own call, so a run can
-// make the clone a step of its own ahead of the build that reads it
+// Its own call, so a run can make the clone a step ahead of the build
 export async function sourceOf(
   app: AppSpec,
   topology: AppTopology,
@@ -72,8 +61,7 @@ export async function sourceOf(
   return await prepareSource(context.host, {
     name: topology.container,
     repo: app.repo,
-    // Already absolute when the CLI loaded the config, because a path is read
-    // against the deployment file rather than wherever this was run
+    // Already absolute: a path is read against the deployment file
     path: app.path && resolve(app.path),
     include: app.include,
     ref: refOf(app, context.branch),
@@ -87,7 +75,7 @@ export async function build(
   app: AppSpec,
   topology: AppTopology,
   context: BuildContext,
-  // Already checked out by a step of its own. Absent, the build fetches it
+  // Already checked out by a step of its own; absent, the build fetches it
   checkedOut?: Source,
 ): Promise<BuildResult> {
   const { host, docker } = context;
@@ -99,17 +87,13 @@ export async function build(
   const release = source.release;
   const fingerprint = fingerprintOf(app, context, release);
   const tag = `${topology.container}:${release}-${fingerprint}`;
-  // Always, rather than where something remembered to ask for it. It costs the
-  // export of layers the runtime build produced anyway, and a flag that has to
-  // be set before a step can run is a flag that will be missing
+  // Always: a flag that must be set before a step can run is one that goes missing
   const builderTag = `${topology.container}-builder:${release}-${fingerprint}`;
 
-  // Asked of the daemon that will run the container, not the one that builds.
-  // An image this machine holds and the host does not is one still to be sent
+  // Asked of the daemon that will run it: an image only this machine holds must be sent
   const runner = context.deliver?.docker ?? docker;
 
-  // The whole build is skipped, not just a transfer. Nothing about this commit,
-  // this pipeline or these secrets differs from the image already sitting there
+  // The whole build is skipped: nothing about this commit or these secrets differs
   if (await held(runner, tag, builderTag)) {
     detail(`already built at ${release.slice(0, 7)}`);
     await runner.image.retag(tag, topology.container);
@@ -135,9 +119,7 @@ export async function build(
     }),
   );
 
-  // BuildKit reads this beside the Dockerfile rather than inside the context,
-  // which is what lets the checkout stay a checkout: the repository keeps its
-  // own .dockerignore, and .git never enters the build
+  // Read beside the Dockerfile, so the repository keeps its own .dockerignore
   await host.write(
     `${app.name}.Dockerfile.dockerignore`,
     renderDockerignore(app.include),
@@ -158,7 +140,7 @@ export async function build(
     watch(detail, context.output),
   );
 
-  // Every layer of this was just built, so it costs the export alone
+  // Every layer was just built, so this costs the export alone
   detail("keeping the builder");
   await docker.image.build(
     { ...invocation, tags: [builderTag], target: BUILDER_STAGE },
@@ -170,8 +152,7 @@ export async function build(
   return { release, fingerprint, tag, builderTag, cached: false };
 }
 
-// One stream, rather than a tarball written here, copied, and read there. The
-// tags travel inside the archive, so nothing has to be named again on arrival
+// One stream, with the tags travelling inside the archive
 async function ship(
   context: BuildContext,
   tags: (string | undefined)[],
@@ -201,8 +182,7 @@ async function ship(
 async function held(docker: Docker, tag: string, builderTag: string) {
   if (!(await docker.image.exists(tag))) return false;
 
-  // A runtime image without the builder that produced it would run the
-  // migration from whatever release happened to be tagged last
+  // Without its builder, a migration would run from whatever was tagged last
   return await docker.image.exists(builderTag);
 }
 
@@ -212,9 +192,7 @@ type Secret = { id: string; src: string };
 // And, for a credential, where it has to land in the image
 type FileSecret = Secret & { path: string };
 
-// The fingerprint is part of every id, because a secret mount is not part of a
-// layer's cache key. Without it a changed environment file is answered with the
-// image that was built from the old one
+// The fingerprint is in every id, since a secret mount is not a layer cache key
 async function writeSecrets(
   app: AppSpec,
   context: BuildContext,
@@ -229,7 +207,7 @@ async function writeSecrets(
     Object.entries(context.files).map(async ([path, contents], index) => ({
       path,
       id: `${app.name}-file-${index}-${fingerprint}`,
-      // Named by index, so a container path with slashes in it stays one file
+      // Named by index, so a container path with slashes stays one file
       src: await context.host.write(`${app.name}.file.${index}`, contents),
     })),
   );
@@ -237,8 +215,7 @@ async function writeSecrets(
   return { env, files };
 }
 
-// BuildKit names the step it is on in its own progress output, which is a
-// better line to show than anything this file could invent
+// BuildKit names its own step, a better line than this file could invent
 const STEP = /^#\d+ \[[^\]]*\] (.+)$/;
 
 function watch(detail: (message: string) => void, output?: (line: string) => void) {
@@ -250,15 +227,13 @@ function watch(detail: (message: string) => void, output?: (line: string) => voi
   };
 }
 
-// The commit is one input of several. The pipeline, the environment file and
-// any credential baked in as a file all change the image without touching it
+// The pipeline, the environment file and baked-in files all change the image too
 function fingerprintOf(app: AppSpec, context: BuildContext, release: string) {
   return createHash("sha256")
     .update(PIPELINE)
     .update(release)
     .update(app.dir ?? "")
-    // It changes the Dockerfile, so an image built without one is not the
-    // image a build with one would produce
+    // It changes the Dockerfile, so the image differs from one built without it
     .update(String(context.agent ?? false))
     .update(JSON.stringify(app.build))
     .update(context.env)

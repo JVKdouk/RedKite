@@ -4,9 +4,7 @@ import { describe, it } from "node:test";
 import config from "./deployment.js";
 import { nextApp, nodeApp, renderDockerfile, renderDockerignore, topologyFor } from "../src/index.js";
 
-// The Dockerfile is the pipeline, and the layer order is the part worth
-// pinning: it is the difference between a deploy and a cold build, and nothing
-// about the file itself would tell you it had changed.
+// Layer order is what nothing about the file itself would tell you had changed
 
 const topology = topologyFor(config, "staging");
 
@@ -28,8 +26,7 @@ const at = (text: string, needle: string) =>
   text.split("\n").findIndex((line) => line.includes(needle));
 
 describe("the rendered Dockerfile", () => {
-  // The whole performance story. The original put the repository above the
-  // package install, which rebuilt the toolchain on every deploy
+  // The repository above the install rebuilt the toolchain on every deploy
   it("installs dependencies before the source is copied", () => {
     const file = render("backend");
 
@@ -67,8 +64,7 @@ describe("the rendered Dockerfile", () => {
     assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
   });
 
-  // The checkout on the host resolves them, so the context arrives complete and
-  // the build needs neither an agent nor a .git directory to reach GitHub
+  // The host resolves them, so the build needs neither an agent nor a .git
   it("does not go looking for the repository during the build", () => {
     const file = render("backend");
 
@@ -77,8 +73,7 @@ describe("the rendered Dockerfile", () => {
     assert.doesNotMatch(file, /ssh-keyscan/);
   });
 
-  // Next serves /_next/static from .next/static. Flattening the carry to a
-  // basename put it at /app/static, and every chunk answered 404
+  // Flattening the carry to a basename put it at /app/static, and chunks 404d
   it("carries the directories the output does not contain", () => {
     const file = render("frontend");
 
@@ -87,15 +82,13 @@ describe("the rendered Dockerfile", () => {
     assert.match(file, /COPY --from=builder \/app\/publi\[c\] \/app\/public/);
   });
 
-  // A COPY whose source is missing fails the build. The bracket makes it a
-  // pattern, and a pattern matching nothing is skipped, so which form a line
-  // takes is the whole of whether that directory is allowed to be absent
+  // The bracket makes it a pattern, and a pattern matching nothing is skipped
   it("fails on a source the build cannot have produced, and only then", () => {
     const file = render("frontend");
 
-    // The output is the app. Skipping it ships an image that starts and 404s
+    // The output is the app: skipping it ships an image that starts and 404s
     assert.ok(file.includes("COPY --from=builder /app/.next/standalone /app"));
-    // As is what the server serves for every chunk it built
+    // What the server serves for every chunk it built
     assert.ok(file.includes("COPY --from=builder /app/.next/static /app/.next/static"));
 
     // public is whatever the repository put there, and plenty have none
@@ -114,9 +107,7 @@ describe("the rendered Dockerfile", () => {
     assert.match(file, /CMD \["node","\/app\/core\/index\.mjs"\]/);
   });
 
-  // A file copied into a layer is in that layer for good: rm leaves it
-  // readable underneath, so the only safe answer is never to copy it. The
-  // files an app names are the exception, and the point is that they are named
+  // A copied file stays readable in its layer, so only named files are copied
   it("never puts the environment into a layer", () => {
     const rendered = render("backend");
 
@@ -125,8 +116,7 @@ describe("the rendered Dockerfile", () => {
     assert.ok(!rendered.includes("rm -f /app/.env"), "removing it is not the same as not adding it");
   });
 
-  // Present for the length of the step and gone after it, which is what lets a
-  // build read a credential without shipping one
+  // Present for the step and gone after, so a credential is read but not shipped
   it("mounts the environment onto each build step", () => {
     const steps = render("backend")
       .split("\n")
@@ -139,9 +129,7 @@ describe("the rendered Dockerfile", () => {
     }
   });
 
-  // What apk cannot install: a global npm package, a directory a package does
-  // not create. Below the packages and above the output, so a new commit does
-  // not pay for them again
+  // Below the packages and above the output, so a new commit does not repeat them
   it("runs the runtime steps between the packages and the output", () => {
     const app = config.apps.find((item) => item.name === "backend")!;
     const target = topology.apps.find((item) => item.name === "backend")!;
@@ -163,9 +151,7 @@ describe("the rendered Dockerfile", () => {
   });
 });
 
-// An app that is a directory of a repository rather than the whole of it. The
-// install still runs at the root, because that is where a workspace lockfile
-// resolves every package at once
+// The install still runs at the root, where a workspace lockfile resolves
 describe("an app in a directory of its own", () => {
   function rendered(dir?: string) {
     const app = config.apps.find((item) => item.name === "frontend")!;
@@ -193,8 +179,7 @@ describe("an app in a directory of its own", () => {
     const file = rendered("apps/web");
 
     assert.ok(file.includes("COPY package.jso[n] /app/package.json"));
-    // The install runs before the workdir moves into the app, which is what
-    // puts the modules where a workspace hoists them
+    // Installed before the workdir moves, putting modules where a workspace hoists them
     assert.ok(at(file, "yarn install") < at(file, "WORKDIR /app/apps/web"));
   });
 
@@ -205,9 +190,7 @@ describe("an app in a directory of its own", () => {
     assert.ok(file.includes("target=/app/apps/web/.next/cache"));
   });
 
-  // The standalone tree traces from the workspace root, so it arrives holding
-  // apps/web/server.js rather than server.js. Landing what it carries at the
-  // top of the image would put the assets where the server does not look
+  // It arrives holding apps/web/server.js, so the carry must not land at the top
   it("lands what it carries where the nested output put the app", () => {
     const file = rendered("apps/web");
 
@@ -217,8 +200,7 @@ describe("an app in a directory of its own", () => {
     assert.match(file, /CMD .*node server\.js/);
   });
 
-  // An output that flattens the app to the top of the image is the ordinary
-  // case, and dir must not move anything in the runtime stage
+  // The ordinary case, where dir must not move anything in the runtime stage
   it("lands it at the top when the output does not keep the layout", () => {
     const spec = { ...config.apps[0]!.build, keepsLayout: false };
     const target = topology.apps.find((item) => item.name === "frontend")!;
@@ -248,8 +230,7 @@ describe("an app in a directory of its own", () => {
   });
 });
 
-// next.config decides which of the two layouts the build produces, and they
-// ship different trees
+// next.config decides which of the two layouts the build produces
 describe("a Next app that is not standalone", () => {
   function rendered(standalone: boolean) {
     const target = topology.apps.find((item) => item.name === "frontend")!;
@@ -273,19 +254,13 @@ describe("a Next app that is not standalone", () => {
     assert.match(file, /CMD .*next start/);
   });
 
-  // A cache mount is not in the image, so a runtime resolving its own
-  // dependencies would find the directory empty
-  // A step after the build runs in the builder image with none of the mounts,
-  // so a node app's dependencies have to be a layer. Only the standalone tree,
-  // which carries its own copy, can afford them on a mount.
+  // A step after the build has no mounts, so a node app's modules must be a layer
   it("leaves a plain node app's own node_modules in the image", () => {
     const app = config.apps.find((item) => item.name === "backend")!;
     assert.ok(!app.build.caches.includes("app-modules"));
   });
 
-  // BuildKit drops a cache mount whenever it likes while keeping the layer
-  // that filled it. The install then does not re-run and the modules are gone,
-  // which reads as a build that cannot find what the manifest plainly lists
+  // A dropped mount with its layer kept reads as a missing dependency
   it("never mounts node_modules, so it is in the layer that installed it", () => {
     assert.ok(!rendered(false).includes("target=/app/node_modules"));
     assert.ok(!rendered(true).includes("target=/app/node_modules"));
@@ -299,8 +274,7 @@ describe("a Next app that is not standalone", () => {
   });
 });
 
-// A cache mount is dropped whenever BuildKit likes, and the layer that filled
-// it is not. Anything a later step must find belongs in the layer
+// Anything a later step must find belongs in the layer, not a mount
 describe("what a preset caches", () => {
   const modules = ["modules", "app-modules"];
 
@@ -324,9 +298,7 @@ describe("what a preset caches", () => {
   });
 });
 
-// A manifest's git dependencies are fetched during the install, inside the
-// build, long after the checkout on the host is done. That needs an agent, an
-// ssh to run, and something to compare a host key against
+// Fetched inside the build, which needs an agent, an ssh, and a host key to check
 describe("what the build can reach over ssh", () => {
   const render = (agent?: boolean) => {
     const app = config.apps.find((item) => item.name === "backend")!;
@@ -354,14 +326,12 @@ describe("what the build can reach over ssh", () => {
     assert.ok(reaching.some((line) => line.includes("yarn build")), "and the steps");
   });
 
-  // Nothing to compare a first sight against, and a refusal is a dependency
-  // it cannot fetch
+  // Nothing to compare a first sight against, and a refusal breaks the fetch
   it("tells git to accept a host it has not seen", () => {
     assert.match(render(true), /ENV GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"/);
   });
 
-  // Asking for a mount nothing is behind fails the build outright, so a run
-  // without an agent must not ask
+  // Asking for a mount nothing is behind fails the build outright
   it("asks for none of it when there is no agent", () => {
     const rendered = render(false);
 
@@ -370,9 +340,7 @@ describe("what the build can reach over ssh", () => {
   });
 });
 
-// A credential that has to be a file rather than a variable. This one is put
-// into the image on purpose, which is the whole difference between it and the
-// environment: it is named, at a path the config chose
+// Put into the image on purpose, named, at a path the config chose
 describe("a secret an app wants as a file", () => {
   const withFiles = (paths: string[]) => {
     const app = config.apps.find((item) => item.name === "backend")!;
@@ -387,8 +355,7 @@ describe("a secret an app wants as a file", () => {
     });
   };
 
-  // cp makes no directory, so a credential anywhere but beside the code used
-  // to fail the build outright
+  // cp makes no directory, so a credential away from the code used to fail
   it("makes the directory before copying into it", () => {
     const rendered = withFiles(["/etc/creds/service-account.json"]);
 
@@ -402,7 +369,7 @@ describe("a secret an app wants as a file", () => {
     assert.match(rendered, /--mount=type=secret,id=secret-1 /);
   });
 
-  // After the output, or the copy that lands /app would take it away again
+  // After the output, or the copy that lands /app would remove it again
   it("puts them in after the output has landed", () => {
     const rendered = withFiles(["/app/creds.json"]);
 
@@ -410,8 +377,7 @@ describe("a secret an app wants as a file", () => {
   });
 });
 
-// What BuildKit is allowed to read. Narrowing the release without narrowing
-// this would upload a node_modules the release says nothing about
+// Narrowing the release alone would upload a node_modules it says nothing about
 describe("the rendered dockerignore", () => {
   it("holds back only git when the tree says what it ignores", () => {
     const rendered = renderDockerignore();
@@ -427,8 +393,7 @@ describe("the rendered dockerignore", () => {
     assert.ok(rendered.includes("!package.json"));
   });
 
-  // The last rule to match decides, so an included directory carrying a .git
-  // would bring it back into the context
+  // The last rule to match decides, so an included .git would come back
   it("excludes git after the exemptions, not before", () => {
     const rendered = renderDockerignore(["src"]).split("\n");
 

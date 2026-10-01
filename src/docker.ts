@@ -1,34 +1,28 @@
 import type { Host, OnLine } from "./host.js";
 
-// The docker CLI on the deploy host. Every guard here reads a single snapshot
-// rather than inspecting one object at a time, because a round trip to another
-// machine costs more than the command it carries.
+// Every guard reads one snapshot, since a round trip costs more than the command
 
 export type BuildInvocation = {
   // A directory on the host, which is where the checkout already is
   context: string;
-  // Rendered per app and kept outside the context, so a repository's own
-  // Dockerfile and .dockerignore are neither read nor overwritten
+  // Kept outside the context, so a repository's own Dockerfile is untouched
   dockerfile: string;
-  // The moving name the container refers to, and the versioned one the next
-  // deploy recognises
+  // The moving name the container refers to, and the versioned one it recognises
   tags: string[];
   // Secret id to a path on the host holding its contents
   secrets?: Record<string, string>;
   // Forwards the agent this shell holds into the build
   ssh?: boolean;
-  // Stops at the builder stage, for the image a step before the swap runs in
+  // Stops at the builder stage, for the image a pre-swap step runs in
   target?: string;
 };
 
 const RUNNING = new Set(["running", "restarting"]);
 
-// What a container was created from, recorded on the container itself. Docker
-// cannot change a label without recreating, which is exactly when it changes
+// Docker cannot change a label without recreating, which is when it changes
 export const SPEC_LABEL = "redkite.spec";
 
-// One command in place of an inspect per object. Every guard in this file used
-// to be its own round trip, and a round trip here is a container exec
+// One command in place of an inspect per object, each its own round trip
 const SNAPSHOT = [
   `ps -a --format '{{.Names}}\t{{.State}}\t{{.Label "${SPEC_LABEL}"}}'`,
   "docker image ls --format '{{.Repository}}:{{.Tag}}'",
@@ -48,8 +42,7 @@ export class Docker {
   readonly image: DockerImage;
   readonly container: DockerContainer;
 
-  // The promise, not the state. Two builds and the infrastructure step all ask
-  // for this at once, and caching the result alone lets every one of them miss
+  // The promise, not the state: callers ask at once and would all miss
   private state?: Promise<HostState>;
 
   constructor(private readonly host: Host) {
@@ -58,8 +51,7 @@ export class Docker {
     this.container = new DockerContainer(this);
   }
 
-  // Read once, then kept current by the mutations below. A deploy owns the
-  // host for its duration, so nothing else is moving underneath it
+  // Read once and kept current below; a deploy owns the host for its duration
   async snapshot() {
     this.state ??= this.read();
     return await this.state;
@@ -76,7 +68,7 @@ export class Docker {
           return [name, { state, spec: spec || undefined }];
         }),
       ),
-      // Both spellings, so a lookup by bare name and one by name:tag both hit
+      // Both spellings, so a lookup by bare name or by name:tag hits
       images: new Set(
         lines(images).flatMap((line) => [line, line.replace(/:latest$/, "")]),
       ),
@@ -129,8 +121,7 @@ class DockerNetwork {
     return true;
   }
 
-  // Disconnect can fail because the container was never attached, which is not
-  // an error. Connect failing is, the address is what nginx resolves to
+  // Disconnect may fail harmlessly; connect failing is what nginx resolves against
   async reconnect(network: string, container: string, ip: string) {
     if (!(await this.docker.container.exists(container))) return false;
 
@@ -151,10 +142,7 @@ class DockerImage {
     return (await this.docker.snapshot()).images.has(name);
   }
 
-  // Every version of one image the host is holding. A deploy tags what it built
-  // by release, and without this the previous ones are never reclaimed.
-  // :latest is not one of them: it is the moving name a container is created
-  // from, and reclaiming it leaves the host unable to start the app
+  // Not :latest, the moving name a container is created from
   async versionsOf(repository: string) {
     const images = (await this.docker.snapshot()).images;
 
@@ -163,21 +151,18 @@ class DockerImage {
     );
   }
 
-  // BuildKit is already inside the daemon that will run the container, so the
-  // image it produces never has to be serialised, transferred or loaded
+  // BuildKit is already in the daemon, so the image is never serialised
   async build(spec: BuildInvocation, onLine?: OnLine) {
     const command = [
       "build",
-      // Provenance attestations make the result a manifest list, which is a
-      // different thing to tag and nothing here consumes them
+      // Provenance attestations would make the result a manifest list
       "--progress plain --provenance=false --pull",
       `-f ${spec.dockerfile}`,
       ...spec.tags.map((tag) => `-t ${tag}`),
       ...Object.entries(spec.secrets ?? {}).map(
         ([id, path]) => `--secret id=${id},src=${path}`,
       ),
-      // Forwards this shell's agent into the build, which is how a dependency
-      // fetched over ssh is authenticated
+      // Forwards this shell's agent, which is how an ssh dependency authenticates
       ...(spec.ssh ? ["--ssh default"] : []),
       ...(spec.target ? [`--target ${spec.target}`] : []),
       spec.context,
@@ -191,8 +176,7 @@ class DockerImage {
     return true;
   }
 
-  // A second name for an image that is already local. Costs nothing, and it is
-  // what lets the next deploy recognise a commit it already holds
+  // Costs nothing, and lets the next deploy recognise a commit it holds
   async retag(from: string, to: string) {
     await this.docker.runOrThrow(`tag ${from} ${to}`, "Image tagging failed");
     await this.docker.track((state) => state.images.add(to));
@@ -223,8 +207,7 @@ class DockerContainer {
     return (await this.docker.snapshot()).containers.get(name)?.state ?? "none";
   }
 
-  // What the running container was created from. Absent for one redkite did not
-  // create, or created before it started recording it
+  // Absent for a container redkite did not create, or created before recording it
   async specOf(name: string) {
     return (await this.docker.snapshot()).containers.get(name)?.spec;
   }
@@ -233,8 +216,7 @@ class DockerContainer {
     return RUNNING.has(await this.status(name));
   }
 
-  // Both streams, since a process that dies as it starts says why on stderr, and
-  // stamped so a line can be set against when the health check gave up
+  // Both streams, stamped so a line can be set against when health gave up
   async logs(name: string, tail: number) {
     return await this.docker.run(`container logs --tail ${tail} --timestamps ${name} 2>&1`);
   }
@@ -265,8 +247,7 @@ class DockerContainer {
     return true;
   }
 
-  // Refuses rather than clobbers, a rename onto an existing name would lose
-  // whichever container is already there
+  // Refuses rather than clobbers, which would lose the container already there
   async rename(from: string, to: string) {
     if (!(await this.exists(from))) return false;
     if (await this.exists(to)) return false;
@@ -316,8 +297,7 @@ class DockerContainer {
   }
 }
 
-// A state change keeps whatever the container was created from: the label is
-// on the container, and only a recreate can move it
+// The label is on the container, so only a recreate can move it
 function set(state: HostState, name: string, next: string) {
   state.containers.set(name, { ...state.containers.get(name), state: next });
 }
@@ -390,8 +370,7 @@ export class DockerBuilder {
     return this;
   }
 
-  // A path on the host rather than the values themselves, so a password is
-  // never an argument in the process list or in the shell history
+  // A path, so a password is never in the process list or shell history
   envFile(path: string) {
     this._envFile = path;
     return this;
@@ -419,8 +398,7 @@ export class DockerBuilder {
     if (!this._name) throw new Error("A container needs a name");
     if (!this._image) throw new Error(`${this._name} has no image`);
 
-    // Defaults to the container name. The original emitted "--hostname
-    // undefined", because nothing ever called the setter
+    // Defaults to the container name, which nothing used to set
     const hostname = this._hostname ?? this._name;
 
     return [

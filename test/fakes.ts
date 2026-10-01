@@ -1,14 +1,12 @@
 import type { Host, Result } from "../src/index.js";
 
-// The commit every fake checkout resolves to. Short enough at the front to
-// read in an assertion, long enough that the source step accepts it
+// Short enough to read in an assertion, long enough for the source step
 export const RELEASE = `abc1234${"0".repeat(33)}`;
 
-// What git writes for a working tree built as it stands, in place of a commit
+// What git writes for a working tree built as it stands
 export const TREE = `def5678${"0".repeat(33)}`;
 
-// A host that records every command and answers from a set of known containers,
-// so the orchestration is asserted on rather than trusted.
+// Records every command, so the orchestration is asserted on not trusted
 export function fakeHost(
   options: { existing?: string[]; specs?: Record<string, string> } = {},
 ) {
@@ -21,8 +19,7 @@ export function fakeHost(
   const specs = new Map<string, string>(Object.entries(options.specs ?? {}));
   const files = new Map<string, string>();
   const health = new Map<string, string>();
-  // Commands the host refuses, matched by substring. A check that fails is a
-  // command that exits non-zero, and there is no other way to say so
+  // Matched by substring: a failing check is a command that exits non-zero
   const refuse: string[] = [];
   const piped: string[] = [];
   // What each container has printed, as docker logs would give it back
@@ -30,9 +27,7 @@ export function fakeHost(
 
   const ok = (stdout = ""): Result => ({ code: 0, stdout, stderr: "" });
 
-  // Every command is a shell command on the host, and most of them happen to
-  // start with docker. The prefix is dropped here so an assertion reads as the
-  // docker operation it is about
+  // The docker prefix is dropped, so an assertion reads as the operation
   const docker = (command: string): Result => {
     const words = command.split(" ");
 
@@ -106,8 +101,7 @@ export function fakeHost(
       return ok();
     }
     if (command.startsWith("container logs")) {
-      // Only while it exists: a container the revert removed took its output
-      // with it, which is why the deploy has to read it first
+      // Only while it exists, which is why the deploy reads logs first
       const name = words.find((word) => containers.has(word));
       if (!name) return { code: 1, stdout: "Error: No such container", stderr: "" };
 
@@ -130,14 +124,11 @@ export function fakeHost(
     if (!command.startsWith("docker ")) {
       commands.push(command);
 
-      // A directory built as it stands is a work tree, and what it answers
-      // with is the tree rather than a commit. Checked before rev-parse,
-      // because asking whether it is one is itself a rev-parse
+      // Checked before rev-parse, because asking is itself a rev-parse
       if (command.includes("is-inside-work-tree")) return ok("true");
       if (command.includes("write-tree")) return ok(TREE);
 
-      // The checkout is several git commands in one script, and the only thing
-      // anything reads back from it is the commit the branch resolved to
+      // Several git commands in one script; only the resolved commit is read back
       return ok(command.includes("rev-parse") ? RELEASE : "");
     }
 
@@ -151,8 +142,7 @@ export function fakeHost(
     return `/tmp/redkite/${name}`;
   };
 
-  // An image shipped from somewhere else arrives holding the tags the archive
-  // carried, which is what the next deploy recognises
+  // A shipped image arrives holding the tags the archive carried
   const pipe: Host["pipe"] = async (local, remote) => {
     piped.push(`${local} | ${remote}`);
 

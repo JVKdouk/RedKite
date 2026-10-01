@@ -3,19 +3,11 @@ import { definePlugin, type Plugin } from "../plugin.js";
 
 import { slug, snapshotName, tokenFrom, type SnapshotPoint } from "./snapshot.js";
 
-// A snapshot of the disk a database sits on, taken before anything migrates it.
-//
-// DigitalOcean's managed databases have no endpoint that takes one on demand:
-// their backups are automatic and the API only lists them. So what this
-// snapshots is the block storage volume redkite's own postgres service keeps
-// its data on, or the droplet when the database is the whole machine. A volume
-// snapshot of a running Postgres is crash consistent rather than clean, which
-// Postgres is built to survive: it replays the log on the way back up.
+// Snapshots the volume or droplet, since managed databases take none on demand
 
 const API = "https://api.digitalocean.com/v2";
 
-// Injected for the same reason the ssh runner is: what this builds is asserted
-// on rather than trusted
+// Injected so what this builds is asserted on rather than trusted
 export type Request = (
   url: string,
   init: { method: string; headers: Record<string, string>; body: string },
@@ -26,11 +18,9 @@ export type DigitalOceanSnapshotOptions = {
   volume?: string;
   // Or the droplet, by id, for a database that is the whole machine
   droplet?: number;
-  // Goes in front of the snapshot's name, which carries the environment and
-  // the minute after it
+  // Goes in front of the snapshot's name, which carries environment and minute
   name?: string;
-  // Environment variable the API token is read from, never the token itself:
-  // a config is committed and a token is not
+  // The variable the token is read from, never the token: a config is committed
   tokenFrom?: string;
   request?: Request;
 };
@@ -89,15 +79,13 @@ function urlFor(options: DigitalOceanSnapshotOptions) {
   return `${API}/droplets/${options.droplet}/actions`;
 }
 
-// A volume takes a snapshot, a droplet is asked to perform one. Two endpoints
-// with two shapes, which is why the target is not one field
+// Two endpoints with two shapes, which is why the target is not one field
 function bodyFor(options: DigitalOceanSnapshotOptions, name: string) {
   if (options.volume) return { name };
   return { type: "snapshot", name };
 }
 
-// Checked where the plugin is written rather than where it runs, so the config
-// fails to load. The token cannot be: a plan reads the config without one
+// Checked where the plugin is written, so the config fails to load
 function assertOneTarget(options: DigitalOceanSnapshotOptions) {
   if (options.volume && options.droplet !== undefined) {
     throw new Error(

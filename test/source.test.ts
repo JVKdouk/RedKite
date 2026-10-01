@@ -5,13 +5,11 @@ import {
   describeRef,
   describeRepo,
   prepareSource,
-  tag,
   type Host,
   type Result,
 } from "../src/index.js";
 
-// Getting the repository onto the machine that builds it. Every command runs
-// there, so this asserts on the script rather than on a checkout.
+// Every command runs there, so this asserts the script, not a checkout
 
 const SHA = "9f2b4c1d8e7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c";
 
@@ -64,8 +62,7 @@ describe("preparing the source", () => {
     assert.equal(source.tree, `/home/ubuntu/.cache/redkite/source/${request.name}`);
   });
 
-  // The mirror is what makes the second deploy cheap. Cloning into a scratch
-  // directory would fetch the whole repository every time
+  // The mirror makes the second deploy cheap; a plain clone refetches it all
   it("keeps the mirror outside the directory a deploy cleans up", async () => {
     const { host, scripts } = recorder();
     await prepareSource(host, request);
@@ -75,7 +72,7 @@ describe("preparing the source", () => {
     assert.ok(scripts.some((s) => s.includes(`git -C '${mirror}' remote update --prune`)));
   });
 
-  // Only the working tree is written: the objects are the mirror's
+  // Only the working tree is written; the objects stay in the mirror
   it("shares the mirror's objects with the checkout", async () => {
     const { host, scripts } = recorder();
     await prepareSource(host, request);
@@ -118,9 +115,7 @@ describe("preparing the source", () => {
   });
 });
 
-// A directory is built as it stands. Nothing is cloned, checked out or
-// cleaned, and the release is what the tree contains rather than what a branch
-// points at
+// Built as it stands, and the release is what the tree holds
 describe("a source already on this machine", () => {
   const TREE = "3a008571e268eca89be2f744149631701e0e94ee";
 
@@ -150,7 +145,7 @@ describe("a source already on this machine", () => {
     assert.ok(!scripts.some((script) => script.includes("checkout")));
   });
 
-  // The branch an environment names has nothing to say about a tree on disk
+  // The branch an environment names says nothing about a directory
   it("never resolves the branch", async () => {
     const { host, scripts } = answering({
       "is-inside-work-tree": "true\n",
@@ -161,8 +156,7 @@ describe("a source already on this machine", () => {
     assert.ok(!scripts.some((script) => script.includes(`refs/heads/${local.ref.name}`)));
   });
 
-  // An edit that is never committed is a different release, or a deploy hands
-  // back an image built from something else
+  // An uncommitted edit is a different release, or the host answers with the old image
   it("reads the release from the working tree, not from HEAD", async () => {
     const { host, scripts } = answering({
       "is-inside-work-tree": "true\n",
@@ -177,8 +171,7 @@ describe("a source already on this machine", () => {
     assert.ok(!digest.includes(`git -C '${local.path}'`), "so no object lands in the source");
   });
 
-  // A directory git knows nothing about has nothing to say what belongs in the
-  // build, so the deployment says it rather than the deploy refusing to run
+  // Outside git the deployment says what belongs, not the checkout
   it("takes an explicit list where git cannot answer", async () => {
     const { host, scripts } = answering({
       "is-inside-work-tree": "",
@@ -197,7 +190,7 @@ describe("a source already on this machine", () => {
     assert.ok(!digest.includes("add -A"), "not everything that is lying there");
   });
 
-  // -- would make -A a path to add rather than the flag that adds everything
+  // -- would make -A a path rather than the flag
   it("never passes the everything flag as a path", async () => {
     const { host, scripts } = answering({
       "is-inside-work-tree": "true\n",
@@ -210,8 +203,7 @@ describe("a source already on this machine", () => {
     assert.ok(!digest.includes("add -- -A"), digest);
   });
 
-  // An include is what a directory outside git needs, so it must not itself
-  // need one
+  // An include is for a directory outside git, so a clone must not need one
   it("asks for a list rather than refusing the directory", async () => {
     const { host } = answering({ "is-inside-work-tree": "" });
 
@@ -240,8 +232,7 @@ describe("a source already on this machine", () => {
   });
 });
 
-// A branch is tracked and a tag or a commit is pinned, and which of the three
-// it is decides where git is asked to look. Guessing would make v1.2.3 either
+// Which of the three decides where git is asked to look
 describe("what a clone is resolved against", () => {
   const at = (ref: { kind: "branch" | "tag" | "commit"; name: string }) => ({
     name: "acme-staging-backend",
@@ -260,8 +251,7 @@ describe("what a clone is resolved against", () => {
     assert.match(resolving(scripts), /rev-parse 'refs\/heads\/staging'/);
   });
 
-  // Peeled, so an annotated tag answers with the commit it points at rather
-  // than with the tag object, which is not something a checkout can use
+  // Peeled, so an annotated tag answers with the commit it points at
   it("looks under tags for a tag, and peels it", async () => {
     const { host, scripts } = recorder();
     await prepareSource(host, at({ kind: "tag", name: "v1.2.3" }));
@@ -286,19 +276,18 @@ describe("what a clone is resolved against", () => {
   });
 });
 
-// What a person reads on a clone step. The host is a tag where it is a known
-// one, and the .git on the end says nothing anybody needs
+// A well known host goes without saying, and the .git says nothing
 describe("naming a repository on screen", () => {
-  it("tags a GitHub repository and drops the .git", () => {
-    assert.equal(describeRepo("git@github.com:acme/backend.git"), `${tag("GH")} acme/backend`);
+  it("names a GitHub repository by its path, without the .git", () => {
+    assert.equal(describeRepo("git@github.com:acme/backend.git"), "acme/backend");
   });
 
   it("reads the https and ssh:// spellings of it the same way", () => {
-    assert.equal(describeRepo("https://github.com/acme/backend.git"), `${tag("GH")} acme/backend`);
-    assert.equal(describeRepo("ssh://git@github.com/acme/backend"), `${tag("GH")} acme/backend`);
+    assert.equal(describeRepo("https://github.com/acme/backend.git"), "acme/backend");
+    assert.equal(describeRepo("ssh://git@github.com/acme/backend"), "acme/backend");
   });
 
-  it("names a host it has no tag for", () => {
+  it("names a host that is not a well known one", () => {
     assert.equal(describeRepo("git@gitlab.com:acme/backend.git"), "gitlab.com:acme/backend");
   });
 

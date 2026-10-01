@@ -15,15 +15,25 @@ import {
   type Crash,
 } from "../src/cli/crash.js";
 import type { Viewer } from "../src/cli/viewer.js";
-import { tag } from "../src/log.js";
+import type { Task } from "../src/log.js";
 
-// The view trims each step to its tail and the alternate screen takes the rest,
-// so this is the only whole record of a run that failed.
+// The only whole record of a failed run, the view keeping only tails
 
 const START = 1_000_000;
 
 function viewer() {
   const calls: string[] = [];
+
+  const task = (label: string): Task => ({
+    detail: (message: string) => calls.push(`detail ${message}`),
+    line: (message: string) => calls.push(`line ${message}`),
+    done: (message?: string) => calls.push(`step-done ${message ?? ""}`),
+    fail: (message: string) => calls.push(`step-fail ${message}`),
+    step: (child: string) => {
+      calls.push(`step ${child} in ${label}`);
+      return task(child);
+    },
+  });
 
   const log = Object.assign((message: string) => calls.push(`info ${message}`), {
     plan: (points: string[]) => calls.push(`plan ${points.join(",")}`),
@@ -32,13 +42,7 @@ function viewer() {
     done: (message: string) => calls.push(`done ${message}`),
     step: (label: string) => {
       calls.push(`step ${label}`);
-
-      return {
-        detail: (message: string) => calls.push(`detail ${message}`),
-        line: (message: string) => calls.push(`line ${message}`),
-        done: (message?: string) => calls.push(`step-done ${message ?? ""}`),
-        fail: (message: string) => calls.push(`step-fail ${message}`),
-      };
+      return task(label);
     },
     close: () => calls.push("close"),
   }) satisfies Viewer;
@@ -62,8 +66,7 @@ const crash = (over: Partial<Crash> = {}): Crash => ({
   ...over,
 });
 
-// A run with two apps building, one of which fails, the shape a crash log is
-// most often written for
+// Two apps building, one failing: the shape a crash log is most written for
 function failedBuild() {
   const time = clock();
   const recorder = recording(viewer().log, time.now);
@@ -156,8 +159,7 @@ describe("what a crash log holds", () => {
     ]);
   });
 
-  // Separated by component is the point: one app's output is not read through
-  // another's to find the error
+  // Separated per component, so one app's output is not another's to search
   it("keeps each step's output in its own file and nowhere else", () => {
     const { files } = failedBuild();
 
@@ -188,7 +190,7 @@ describe("what a crash log holds", () => {
     assert.match(run, /^03-building-backend\.log +failed +12s$/m);
   });
 
-  // The view keeps a step's last 2000 lines. The whole point is the ones before
+  // The view keeps a step's last 2000 lines
   it("keeps every line a step printed, however many", () => {
     const recorder = recording(viewer().log);
     const build = recorder.log.step("build");
@@ -220,14 +222,18 @@ describe("what a crash log holds", () => {
     assert.ok("01-swap-before-migrate-backend.log" in crashFiles(recorder.transcript, crash()));
   });
 
-  it("writes a tag as the bracketed word, since a file cannot draw one", () => {
-    const recorder = recording(viewer().log);
-    recorder.log.step("Cloning backend").done(`${tag("GH")} acme/backend staging -> abc1234`);
+  it("keeps a step opened inside another, and hands it on to the log it wraps", () => {
+    const { log, calls } = viewer();
+    const recorder = recording(log);
 
-    const file = fileOf(crashFiles(recorder.transcript, crash()), "01-cloning-backend.log");
+    const build = recorder.log.step("build");
+    build.step("Building backend").line("compiled");
 
-    assert.match(file, /^state {8}done: \[GH\] acme\/backend staging -> abc1234$/m);
-    assert.ok(!file.includes("\uE000"));
+    const files = crashFiles(recorder.transcript, crash());
+
+    assert.ok(calls.includes("step Building backend in build"));
+    assert.match(fileOf(files, "02-building-backend.log"), /\| compiled/);
+    assert.match(fileOf(files, "run.log"), /^ {2}02-building-backend\.log +running/m);
   });
 
   it("says a step that never finished was still running", () => {
@@ -240,8 +246,7 @@ describe("what a crash log holds", () => {
     assert.match(swap, /^ended {8}still running when the run ended$/m);
   });
 
-  // The terminal gets the tail of the message. The step that threw is usually
-  // a cause or two down, and its stack is what says where
+  // The step that threw is a cause or two down, and its stack says where
   it("writes the whole error chain, stacks included", () => {
     const root = new Error("docker build exited 1", { cause: new Error("yarn build failed") });
     const run = fileOf(crashFiles(recording(viewer().log).transcript, crash({ error: root })), "run.log");
@@ -286,8 +291,7 @@ describe("where a crash log goes", () => {
     assert.equal(directory, "/tmp/acme/staging/crash-2026-09-14T10-22-05.123Z");
   });
 
-  // The environment arrives on the command line, and a path is not somewhere
-  // it gets to choose
+  // The environment arrives on the command line, and a path is not its to choose
   it("keeps a project or environment from leaving the directory", () => {
     const directory = crashDirectory("../acme", "../../etc", new Date("2026-09-14T10:22:05.123Z"));
 

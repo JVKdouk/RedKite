@@ -1,7 +1,4 @@
-// A layer cache model. BuildKit keys an instruction on the chain above it plus
-// its own inputs, so the first one whose input changed re-runs, and so does
-// everything below it. Counting that is not a wall clock measurement, but it is
-// exactly what decides one.
+// Counts re-run instructions: the first changed input re-runs everything below
 
 export type Input = "stable" | "commit" | "source" | "lockfile" | "manifest" | "clock";
 

@@ -1,0 +1,20 @@
+version: 2
+
+updates:
+  # Three devDependencies and nothing at runtime, so this is quiet by
+  # construction. Monthly rather than weekly for the same reason
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      types:
+        patterns: ["@types/*"]
+
+  # The pinned actions in check.yml and release.yml. A composite action left on
+  # an unmaintained checkout is the kind of thing nobody goes looking for
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

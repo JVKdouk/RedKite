@@ -6,19 +6,8 @@ import { join } from "node:path";
 
 import type { SecretStore } from "./refs.js";
 
-// One implementation of the interface deploy consumes. A second provider only
-// has to satisfy read().
-//
-// The CLI runs here as an ordinary process. It used to run inside a container
-// purely as a sandbox, which meant installing several thousand packages on
-// every deploy to read three items.
+// Runs the CLI as an ordinary process. Nothing on stdin, and output kept verbatim
 
-// Nothing on stdin, ever. Both CLIs ask for a password when they decide the
-// vault is locked, and a question put down a pipe nobody writes to is a deploy
-// that waits for ever rather than one that fails.
-//
-// The output is kept exactly as it came: a secret is a file's contents, and a
-// key that lost its last newline is a key some parsers refuse
 function run(file: string, args: string[], env: Record<string, string> = {}) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(file, args, {
@@ -40,18 +29,15 @@ function run(file: string, args: string[], env: Record<string, string> = {}) {
   });
 }
 
-// A session the caller already holds, or what it takes to obtain one. Both
-// spellings in one object would be a pair of credentials nobody can tell apart
+// A session, or what it takes to obtain one; both at once is indistinguishable
 export type BitwardenCredentials = {
   detail?: (message: string) => void;
 } & ({ session: string } | { clientId: string; clientSecret: string; password: string });
 
-// Used when bw is not already on PATH. Pinned, because an unpinned CLI is a
-// different program on a machine that has never run a deploy before
+// Used when bw is not on PATH. Pinned, so a fresh machine runs the same program
 const CLI = "@bitwarden/cli@2026.4.2";
 
-// Where that install lands. Keyed by the pinned version, so bumping it installs
-// beside the old one rather than over a vault command that is mid-flight
+// Keyed by version, so a bump installs beside a command that is mid-flight
 const CLIS = join(homedir(), ".cache", "redkite", "cli");
 
 export async function bitwardenStore(
@@ -59,8 +45,7 @@ export async function bitwardenStore(
 ): Promise<SecretStore> {
   const detail = credentials.detail ?? (() => {});
 
-  // Its own state directory, so a deploy neither reads nor disturbs whatever
-  // vault the person running it happens to be logged into
+  // Its own state directory, so a deploy does not disturb the person's own vault
   const appdata = join(homedir(), ".cache", "redkite", "bitwarden");
   await mkdir(appdata, { recursive: true });
 
@@ -74,10 +59,7 @@ export async function bitwardenStore(
 
   const session = await unlock(bw, credentials, detail);
 
-  // An item added since the last deploy is not in the local vault otherwise,
-  // and bw get answers "not found" rather than fetching it. This is also what
-  // proves a session handed in still works: without it the first read is what
-  // finds out, and by then a build is waiting on the answer
+  // Without this a new item reads as not found, and a stale session fails late
   await bw(["sync"], { BW_SESSION: session }).catch((error: unknown) => {
     if (!("session" in credentials)) return undefined;
 
@@ -87,8 +69,7 @@ export async function bitwardenStore(
     );
   });
 
-  // Fetched once each. A second read of the same item during a deploy is the
-  // same answer, and this avoids a process per call site
+  // Fetched once each, avoiding a process per call site
   const cache = new Map<string, Promise<string>>();
 
   const fetch = async (id: string) => {
@@ -114,9 +95,7 @@ export async function bitwardenStore(
 
 type Bw = (args: string[], env?: Record<string, string>) => Promise<{ stdout: string }>;
 
-// A session handed in is one nobody had to obtain, which is the whole of what
-// a key in the environment buys: no api credentials, no master password, and
-// two fewer round trips before the first item is read
+// A key in the environment buys no credentials, no password, two fewer round trips
 async function unlock(
   bw: Bw,
   credentials: BitwardenCredentials,
@@ -129,7 +108,7 @@ async function unlock(
 
   detail("unlocking the vault");
 
-  // Already logged in is not an error, the session is what matters
+  // Already logged in is not an error; the session is what matters
   await bw(["login", "--apikey"], {
     BW_CLIENTID: credentials.clientId,
     BW_CLIENTSECRET: credentials.clientSecret,
@@ -149,8 +128,7 @@ async function unlock(
 
 type Cli = { file: string; prefix: string[] };
 
-// A machine with the CLI installed pays nothing. One without it installs the
-// pinned version once, rather than resolving it again on every call below
+// Installed once, rather than resolved again on every call below
 async function resolveCli(detail: (message: string) => void): Promise<Cli> {
   const override = process.env["REDKITE_BW_BIN"];
   if (override) return { file: override, prefix: [] };
@@ -165,8 +143,7 @@ async function resolveCli(detail: (message: string) => void): Promise<Cli> {
   return { file: await install(detail), prefix: [] };
 }
 
-// npx resolves the package again on every invocation, and unlocking a vault is
-// three commands plus one per secret. That was most of a second, six times over
+// npx would resolve again per call, and unlocking is three commands plus one per secret
 async function install(detail: (message: string) => void) {
   const directory = join(CLIS, CLI.replace(/[^\w.]+/g, "-"));
   const binary = join(directory, "node_modules", ".bin", "bw");

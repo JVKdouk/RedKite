@@ -6,10 +6,7 @@ import type { Run } from "../pipeline.js";
 import type { ServiceTopology, Topology } from "../topology.js";
 import type { Deployment, ServiceSpec } from "../types.js";
 
-// What a deployment says should be running, and how that compares to what is.
-// Services outlive a deploy, so the config that created one is not the config
-// the file now holds: a changed public port or a rendered nginx block lands in
-// an image the running container was never created from.
+// Services outlive a deploy, so the config that created one may not be current
 
 export type PlannedService = {
   spec: ServiceSpec;
@@ -31,9 +28,8 @@ export function plannedServices(
     return { spec, service, files: spec.files ?? {} };
   });
 
-  // Nothing serves in a verify run, so a proxy there would resolve upstreams
-  // that were never created and publish a port for them
-  if (run === "verify") return rest;
+  // Nothing serves in a verify run, so it gets no proxy and no published port
+  if (run === "verify" || config.proxy === false) return rest;
 
   const proxy: PlannedService = {
     spec: proxyService(config),
@@ -47,9 +43,7 @@ export function plannedServices(
   return [proxy, ...rest];
 }
 
-// Everything a recreate would change, and nothing a deploy resolves. Secrets
-// are named by their refs rather than their values: whether the config is the
-// one running is a question a plan should answer without unlocking a vault
+// Secrets are named by ref, so a plan can answer without unlocking a vault
 export function fingerprintOf(planned: PlannedService, topology: Topology) {
   const { spec, service, files, publish } = planned;
 
@@ -62,7 +56,7 @@ export function fingerprintOf(planned: PlannedService, topology: Topology) {
     environment: spec.environment,
     secrets: spec.secrets,
     files,
-    // The proxy alone, and the two things being published costs it
+    // The proxy alone, and what publishing it costs
     publish: publish && { host: publish, container: LISTEN_PORT },
     extraHosts: publish ? topology.extraHosts : undefined,
   };
@@ -70,8 +64,7 @@ export function fingerprintOf(planned: PlannedService, topology: Topology) {
   return createHash("sha256").update(JSON.stringify(shape)).digest("hex").slice(0, 16);
 }
 
-// Why a service is not what the deployment says it should be. Absent from the
-// list means it is
+// Why a service differs from the deployment; absent means it does not
 export type Drift = {
   container: string;
   name: string;
@@ -98,8 +91,7 @@ async function reasonFor(planned: PlannedService, topology: Topology, docker: Do
   if (!(await docker.container.exists(name))) return "missing" as const;
 
   const held = await docker.container.specOf(name);
-  // Created by hand, or by a redkite that did not record what it created from.
-  // Either way nothing here can say it matches, so it is rebuilt once
+  // Created by hand or by an older redkite, so it is rebuilt once
   if (!held) return "unrecognised" as const;
 
   if (held !== fingerprintOf(planned, topology)) return "changed" as const;

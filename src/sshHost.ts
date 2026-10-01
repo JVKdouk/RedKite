@@ -5,9 +5,7 @@ import type { Host, OnLine, Result } from "./host.js";
 import { quote, spawnCollect } from "./shell.js";
 import type { HostKeys } from "./types.js";
 
-// The deploy host, reached over ssh. The agent is forwarded rather than a key,
-// there is nothing to forward, and the agent travels with the connection so the
-// host can clone the repositories itself.
+// The agent travels with the connection, so the host clones the repositories itself
 
 // Injected so the argv this builds is asserted on rather than trusted
 export type Ssh = (
@@ -16,7 +14,6 @@ export type Ssh = (
 ) => Promise<Result>;
 
 // The local shell a piped stream is fed through, injected for the same reason
-// run is: what this builds is asserted on rather than trusted
 export type Shell = (command: string) => Promise<Result>;
 
 export type SshOptions = {
@@ -26,22 +23,18 @@ export type SshOptions = {
   cache?: string;
   // How the host's key is checked. Defaults to accept-new
   hostKeys?: HostKeys;
-  // Aborting kills the ssh client. The command it was carrying keeps running on
-  // the other machine, which is what stop is for
+  // Aborting kills the client; what it carried keeps running, which stop handles
   signal?: AbortSignal;
 };
 
-// What ssh calls each of them. accept-new is the default rather than no: a
-// deploy hands over a vault's contents, and the last thing it should do that
-// to is a machine that answered to the address and nothing else
+// accept-new rather than no: a deploy hands a vault's contents to this machine
 const CHECKING: Record<HostKeys, string> = {
   "accept-new": "accept-new",
   strict: "yes",
   off: "no",
 };
 
-// One TCP connection and one authentication for the whole deploy. Without it
-// every command pays a handshake, which is most of what a command costs
+// One connection for the whole deploy; a handshake is most of what a command costs
 function multiplex(hostKeys: HostKeys = "accept-new") {
   return [
     "-o",
@@ -50,11 +43,10 @@ function multiplex(hostKeys: HostKeys = "accept-new") {
     "ControlPersist=60s",
     "-o",
     `StrictHostKeyChecking=${CHECKING[hostKeys]}`,
-    // Never a prompt. Unknown under strict is a refusal with a reason, and a
-    // question nobody is there to answer is a deploy that hangs
+    // Never a prompt: a question nobody can answer is a deploy that hangs
     "-o",
     "BatchMode=yes",
-    // The host clones from GitHub on our behalf rather than us shipping a tree
+    // The host clones on our behalf rather than us shipping a tree
     "-A",
   ];
 }
@@ -67,8 +59,7 @@ export async function sshHost(bastion: string, options: SshOptions = {}): Promis
   const run =
     options.run ?? ((args, extra) => spawnCollect("ssh", args, { ...extra, signal }));
 
-  // Cleanup has to survive the abort that made it necessary, so it is the one
-  // thing here that is not killed along with everything else
+  // Cleanup has to survive the abort that made it necessary
   const final = options.run ?? ((args, extra) => spawnCollect("ssh", args, extra));
 
   const shell =
@@ -88,12 +79,10 @@ export async function sshHost(bastion: string, options: SshOptions = {}): Promis
   const ssh = (command: string, extra?: { stdin?: string; onLine?: OnLine }) =>
     run(argv(command), extra);
 
-  // Each command records the process group job control gave it, because killing
-  // the ssh client here leaves what it was carrying running there
+  // Killing the client here leaves what it carried running there
   let issued = 0;
 
-  // One round trip for all of it, including the home directory the cache hangs
-  // off. A literal ~ would only survive as long as every caller used a shell
+  // One round trip, including the home directory a literal ~ would not survive
   const opened = await ssh(
     `mkdir -p -m 700 '${directory}' && mkdir -p "$HOME/.cache/redkite" && printf %s "$HOME"`,
   );
@@ -126,17 +115,14 @@ export async function sshHost(bastion: string, options: SshOptions = {}): Promis
       return path;
     },
 
-    // Through the connection that is already open, so an image is streamed
-    // rather than written to a disk at each end and copied between them
+    // Streamed through the open connection rather than written to a disk at each end
     pipe: async (local, remote) =>
       await shell(`${local} | ssh ${argv(remote).map(quote).join(" ")}`),
 
-    // Runs on the connection that is already open, and without the signal that
-    // killed whatever made it necessary
+    // On the open connection, without the signal that made it necessary
     final: async (command) => await final(argv(command)),
 
-    // Signalled where they are running, not here. Killing the client would
-    // leave the build going with nothing left able to reach it
+    // Signalled where they run: killing the client would leave the build unreachable
     stop: async (name) => {
       const result = await final(argv(sweep(directory, name)));
       return Number(result.stdout.trim()) || 0;
@@ -149,16 +135,12 @@ export async function sshHost(bastion: string, options: SshOptions = {}): Promis
   };
 }
 
-// Job control puts a background job in a process group of its own, which is the
-// only handle a second connection has on what the first one started. Nothing is
-// written to stdout by this: an announcement would corrupt the host snapshot
+// The process group is the only handle a second connection has; writes nothing to stdout
 function supervised(command: string, pidfile: string) {
   return `set -m; { ${command}; } & __rk=$!; printf %s "$__rk" > '${pidfile}'; wait "$__rk"`;
 }
 
-// Signals every group this deploy started there, then counts the ones still
-// answering. The count is what the caller waits on: a build that ignores the
-// first signal keeps it above zero until a harder one is sent
+// The count is what the caller waits on until a harder signal is sent
 function sweep(directory: string, name: string) {
   return (
     `left=0; for f in '${directory}'/*.pid; do [ -f "$f" ] || continue; ` +

@@ -1,0 +1,27 @@
+name: Feature
+description: Something redkite should be able to do
+labels: [feature]
+
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to deploy
+      description: >-
+        The deployment, not the feature. Most of redkite's surface is derived
+        from the config rather than configured, so the useful question is
+        usually what your setup looks like rather than which flag would cover it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: A hook, a step, a script, or nothing because it cannot be done
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: What it might look like in a config
+      render: ts

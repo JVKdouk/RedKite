@@ -30,7 +30,7 @@ jobs:
       # which is faster than anything this runner can ship it
       - uses: actions/checkout@v4
 
-      - uses: JVKdouk/redkite@v1
+      - uses: JVKdouk/redkite@v0
         with:
           command: deploy
           environment: production
@@ -47,7 +47,7 @@ jobs:
       # is in rather than what that run remembered, and does nothing when there
       # is nothing to undo
       - if: cancelled()
-        uses: JVKdouk/redkite@v1
+        uses: JVKdouk/redkite@v0
         with:
           command: rollback
           environment: production

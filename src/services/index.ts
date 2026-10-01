@@ -1,8 +1,6 @@
 import type { ProxySpec, SecretRefs, ServiceSpec } from "../types.js";
 
-// Not something a deployment lists. Apps carry routes, routes need something
-// to resolve them, and this says what that something is rather than that it
-// exists. A service by this name is refused: there is already one
+// Derived from the apps' routes, not listed; a service by this name is refused
 export function nginx(options: ProxySpec = {}): ProxySpec {
   return {
     image: options.image ?? "nginx:stable",
@@ -29,21 +27,19 @@ export function redis(options: RedisOptions = {}): ServiceSpec {
     alias: options.alias ?? "redis",
     restart: "always",
     address: options.address,
-    // The image declares VOLUME /data, so without this the data lands in an
-    // anonymous volume that survives nothing and can be named by no one
+    // The image declares VOLUME /data, so unnamed data lands in an anonymous volume
     volumes: options.volumes ?? { data: "/data" },
   };
 }
 
 type PostgresOptions = {
-  // The image refuses to start without POSTGRES_PASSWORD, so this is required
-  // rather than optional: a service that cannot come up is not a default
+  // The image refuses to start without POSTGRES_PASSWORD, so it is required
   secrets: SecretRefs;
   image?: string;
   alias?: string;
   address?: number;
   volumes?: Record<string, string>;
-  // POSTGRES_DB and POSTGRES_USER, which are settings rather than credentials
+  // Settings rather than credentials
   environment?: Record<string, string>;
 };
 
@@ -56,8 +52,7 @@ export function postgres(options: PostgresOptions): ServiceSpec {
     address: options.address,
     secrets: options.secrets,
     environment: options.environment,
-    // The image declares VOLUME on this path, so without naming it the data
-    // lands in an anonymous volume that survives nothing and nobody can name
+    // The image declares VOLUME here, so unnamed data lands in an anonymous volume
     volumes: options.volumes ?? { data: "/var/lib/postgresql/data" },
   };
 }

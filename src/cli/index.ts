@@ -20,8 +20,7 @@ import { loadDotenv } from "./dotenv.js";
 import { dumpCrash, recording } from "./crash.js";
 import { createLog, describeFailure } from "./log.js";
 
-// One command that reads the config and does everything under it: the agent,
-// the vault, the checkout, the build, the swap and the cleanup.
+// One command: the agent, the vault, the checkout, the build, the swap, the cleanup
 
 const USAGE = `redkite <command> [environment]
 
@@ -41,8 +40,7 @@ Environment defaults to staging. A deployment is one redkite.config.ts at the ro
 of the project, and everything below it is derived.
 `;
 
-// Wraps a host rather than living inside one, so both implementations are
-// measured the same way and neither knows it is being timed
+// Wraps a host, so both implementations are measured the same way
 function measured(host: Host, say?: (line: string) => void) {
   const totals = { commands: 0, commandMs: 0, files: 0 };
 
@@ -60,8 +58,7 @@ function measured(host: Host, say?: (line: string) => void) {
       totals.commands += 1;
       totals.commandMs += Date.now() - started;
 
-      // The exit code matters: several of these are allowed to fail, and a
-      // deploy reading verbose output is one where somebody wants to know which
+      // The exit code matters: several of these are allowed to fail
       say?.(`  $ ${command}  ${Date.now() - started}ms exit ${result.code}`);
       return result;
     },
@@ -85,8 +82,7 @@ function seconds(ms: number) {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-// Read rather than generated into the build, so a published package and a
-// linked checkout answer with the same thing
+// Read, so a published package and a linked checkout answer the same
 async function version() {
   const manifest = new URL("../../package.json", import.meta.url);
   const { readFile } = await import("node:fs/promises");
@@ -97,7 +93,7 @@ async function version() {
   return found;
 }
 
-// Flags that take a value, so the value is not mistaken for the environment
+// Flags taking a value, so it is not mistaken for the environment
 const VALUED = new Set(["--config"]);
 
 function flag(argv: string[], name: string) {
@@ -119,7 +115,7 @@ export function positional(argv: string[]) {
       continue;
     }
 
-    // Only the two-word form consumes the next item. --flag=value does not
+    // Only the two-word form consumes the next item
     if (VALUED.has(arg)) index += 1;
   }
 
@@ -130,8 +126,7 @@ export async function main(argv: string[]) {
   try {
     return await dispatch(argv);
   } catch (error) {
-    // A deploy reports its own failure through the live view. Everything before
-    // one has started, a config that will not load above all, lands here
+    // Everything before the view starts, a config that will not load above all
     process.stderr.write(`${describeFailure(error)}\n`);
     process.exitCode = 1;
   }
@@ -148,8 +143,7 @@ async function dispatch(argv: string[]) {
 
   const configPath = flag(argv, "--config");
 
-  // Before anything reads a credential out of the environment, and only where
-  // the environment does not already say. What the job set wins over a file
+  // Only where the environment is silent: what the job set wins over a file
   const read = loadDotenv(projectRoot(configPath), environment);
 
   if (command === "plan") return await plan(environment, configPath, read);
@@ -168,9 +162,7 @@ async function dispatch(argv: string[]) {
   process.exitCode = command ? 1 : 0;
 }
 
-// Neither runs a pipeline. Both exist for the run that was killed rather than
-// asked to stop, so they read what the host is in rather than what a deploy
-// remembered, and both are safe where there is nothing to do
+// For a run that was killed: both read the host, and both are safe with nothing to do
 async function recover(
   command: "rollback" | "down",
   environment: string,
@@ -181,8 +173,7 @@ async function recover(
   const deployHost = environmentOf(config, environment)?.host;
 
   const say = (message = "") => process.stdout.write(`${message}\n`);
-  // Printed rather than drawn: a recovery has no view, and its connection
-  // step is silent
+  // Printed rather than drawn: a recovery has no view
   if (needsAgent(config, environment) && requireAgent().started) say(AGENT_STARTED);
 
   const host = await hostFor(deployHost, silent);
@@ -207,8 +198,7 @@ async function recover(
   }
 }
 
-// These print rather than draw: a recovery runs after the view has gone, and
-// often in a job that is already being torn down
+// A recovery runs after the view has gone, often in a job being torn down
 function asLog(say: (message: string) => void): Log {
   return Object.assign(say, { warn: say, fail: say, done: say, step: () => silent.step("") });
 }
@@ -223,12 +213,7 @@ async function plan(environment: string, configPath?: string, read: string[] = [
   if (read.length > 0) say(`read      ${read.join(", ")}`);
   say(`network   ${topology.network}  ${topology.cidr}`);
   say(`branch    ${topology.branch}`);
-  // A verify environment publishes nothing, because nothing in one serves
-  say(
-    topology.publicPort
-      ? `published ${topology.publicPort} -> ${topology.router.container} ${topology.router.address}\n`
-      : "published nothing, this environment has no publicPort\n",
-  );
+  say(publishedBy(config, topology));
 
   const sources = new Map(config.apps.map((app) => [app.name, app.path ?? app.repo]));
 
@@ -237,7 +222,8 @@ async function plan(environment: string, configPath?: string, read: string[] = [
     say(`  source   ${sources.get(app.name) ?? "?"}`);
     say(`  current  ${app.container}  ${app.currentAddress}:${app.port}`);
     say(`  retired  ${app.retired}  ${app.retiredAddress}`);
-    say(`  route    ${app.route}`);
+    if (app.route) say(`  route    ${app.route}`);
+    if (app.published) say(`  port     ${app.published} -> ${app.port}`);
 
     for (const volume of app.volumes) {
       say(`  volume   ${volume.volume} -> ${volume.mountPath}`);
@@ -258,23 +244,35 @@ async function plan(environment: string, configPath?: string, read: string[] = [
     }
   }
 
-  // An environment that publishes nothing cannot serve, so verify is the only
-  // run it supports. Nothing declares that: the missing port is what says it
-  const serves = Boolean(topology.publicPort);
+  // A missing port is what says verify-only; without a proxy each app is its own way in
+  const serves = config.proxy === false || Boolean(topology.publicPort);
 
   sayPlugins(config, say);
   sayPipeline(config, serves, say);
   await sayDrift(config, topology, serves ? "deploy" : "verify", say);
 
-  if (!serves) return;
+  if (!serves || config.proxy === false) return;
 
   say(`\n# rendered nginx ${"-".repeat(44)}\n`);
   say(renderProxy(topology, config.proxy));
 }
 
-// What is running against what this file says should be. Services outlive a
-// deploy, so this is the only part of a plan that cannot be answered from the
-// config alone, and the only part that needs the host
+// A verify environment publishes nothing, and a proxyless deployment publishes each app
+function publishedBy(config: Deployment, topology: Topology) {
+  if (config.proxy !== false) {
+    return topology.publicPort
+      ? `published ${topology.publicPort} -> ${topology.router.container} ${topology.router.address}\n`
+      : "published nothing, this environment has no publicPort\n";
+  }
+
+  const apps = topology.apps.filter((app) => app.published !== undefined);
+  if (apps.length === 0) return "published nothing, there is no proxy and no app has a port\n";
+
+  const each = apps.map((app) => `${app.published} -> ${app.container}:${app.port}`);
+  return `published ${each.join(", ")}, no proxy\n`;
+}
+
+// The only part of a plan that needs the host, since services outlive a deploy
 async function sayDrift(
   config: Deployment,
   topology: Topology,
@@ -295,8 +293,7 @@ async function sayDrift(
     for (const drift of drifted) say(`  ${drift.container.padEnd(34)}${DRIFT[drift.reason]}`);
     say(`\n  a ${run} converges these`);
   } catch (error) {
-    // A plan is worth printing without a host. Saying so beats printing
-    // nothing, and beats printing a clean bill of health nobody checked
+    // Saying so beats printing nothing, and beats a clean bill nobody checked
     say(`  not checked: ${describeFailure(error).split("\n")[0]}`);
   } finally {
     await host?.close?.();
@@ -310,8 +307,7 @@ const DRIFT: Record<Drift["reason"], string> = {
   unrecognised: "not created by redkite, will be recreated",
 };
 
-// Everything this deployment opted into. A vault that is missing from here is
-// the reason its refs will not resolve, and that is worth seeing before a run
+// A missing vault is why its refs will not resolve, worth seeing before a run
 function sayPlugins(config: Deployment, say: (message?: string) => void) {
   const plugins = config.plugins ?? [];
   if (plugins.length === 0) return;
@@ -333,20 +329,17 @@ function gap(width: number) {
   return " ".repeat(Math.max(2, COLUMN - width));
 }
 
-// What each run will actually do, in the order it will do it. A step is
-// addressed rather than called, so this is the only place a sequence is visible
+// A step is addressed rather than called, so this is where a sequence shows
 function sayPipeline(
   config: Deployment,
   serves: boolean,
   say: (message?: string) => void,
 ) {
-  // What the run will walk, which is the plugins' steps and then the
-  // deployment's own. A plan that showed only one of them would be a plan of a
-  // different deploy
+  // The plugins' steps and then the deployment's own, as the run walks them
   const steps = [...pluginSteps(config.plugins), ...(config.steps ?? [])];
   const added = new Set(steps.map((step) => step.point));
 
-  // Says which plugin a step came from, because a point on its own does not
+  // Says which plugin a step came from, which a point alone does not
   const from = new Map(
     (config.plugins ?? []).flatMap((plugin) =>
       (plugin.steps ?? []).map((step) => [step.point, plugin.name] as const),
@@ -361,8 +354,7 @@ function sayPipeline(
 
   const checked = config.apps.filter((app) => app.verify).map((app) => app.name);
 
-  // Both refusals live on a step's check, so a run printed here is one this
-  // environment can actually be asked for
+  // Both refusals live on a step's check, so a printed run can be asked for
   const runs = Object.entries(RUNS).filter(
     ([run]) => (run === "verify" ? checked.length > 0 : serves),
   );
@@ -379,8 +371,7 @@ function sayPipeline(
 
     for (const phase of phases) {
       for (const slot of SLOTS) {
-        // Redkite's own step leads its phase's slot. A deployment that puts one
-        // at the same point replaces it, and this is where that shows
+        // Redkite's own step leads its slot, and a replacement shows here
         if (slot === "main") {
           const who = added.has(phase) ? "replaced" : "redkite";
           const what = phase === "verify" ? `  ${checked.join(", ")}` : "";
@@ -390,7 +381,7 @@ function sayPipeline(
         for (const step of at(phase, slot)) {
           const owner = from.get(step.point);
           if (!owner) say(`  ${step.point}`);
-          // A point long enough to fill the column still gets its two spaces
+          // A point filling the column still gets its two spaces
           else say(`  ${step.point}${gap(step.point.length)}${owner}`);
         }
       }
@@ -398,13 +389,10 @@ function sayPipeline(
   }
 }
 
-// Five presses is a build that has ignored SIGKILL, which is a process nothing
-// here can end. The way out is offered rather than taken, because taking it is
-// the one thing that leaves work running with nothing watching it
+// Offered rather than taken: taking it leaves work running with nothing watching
 const ASK_AT = 5;
 
-// The first ask is polite, every one after it is not. What a press does is
-// choose the signal the wait keeps sending, and only the last one leaves
+// A press chooses the signal the wait keeps sending, and only the last one leaves
 export function stopper(on: {
   abort: () => void;
   say: (message: string) => void;
@@ -436,7 +424,7 @@ export function stopper(on: {
   };
 }
 
-// What leaving costs, said before it is offered rather than after it is done
+// What leaving costs, said before it is offered rather than after
 const REFUSING = [
   "This is not stopping. It has had SIGKILL and is still there.",
   "Press again to leave redkite. That does not stop it: the build keeps running",
@@ -444,9 +432,7 @@ const REFUSING = [
   "the CPU and disk it is using. Nothing will clean up after it but you.",
 ];
 
-// A stopped deploy is not over until what it started is gone. The host is asked
-// again and again because the answer is a count, and zero is the only one that
-// ends this
+// The answer is a count, and zero is the only one that ends this
 async function gone(
   host: Host,
   hardest: () => "TERM" | "KILL",
@@ -466,8 +452,7 @@ async function gone(
 
 const POLL_MS = 400;
 
-// --local says it for this run alone, without the config having to change. It
-// lands wherever the environment came from, so an inline one moves too
+// Lands wherever the environment came from, so an inline one moves too
 export function buildingHere(config: Deployment, environment: string): Deployment {
   if (config.environment) {
     return { ...config, environment: { ...config.environment, buildOn: "local" } };
@@ -485,8 +470,7 @@ export function buildingHere(config: Deployment, environment: string): Deploymen
   };
 }
 
-// Without a bastion the containers are on this machine, and every command the
-// deploy issues is one this process can run itself
+// Without a bastion every command is one this process can run itself
 async function hostFor(
   host: DeployHost | undefined,
   log: Log,
@@ -494,8 +478,7 @@ async function hostFor(
   startedAgent = false,
 ) {
   if (!host?.bastion) {
-    // No connection to say it in. A run on this machine that clones over ssh
-    // still started one, and that is still worth knowing
+    // No connection to say it in, but a local run cloning over ssh still started one
     if (startedAgent) log.warn(AGENT_STARTED);
     return await localHost({ signal });
   }
@@ -505,7 +488,7 @@ async function hostFor(
 
   try {
     const opened = await sshHost(host.bastion, { signal, hostKeys: host.hostKeys });
-    // Kept on the row once the connection is open, not only while it opens
+    // Kept on the row once open, not only while it opens
     task.done(startedAgent ? AGENT_STARTED : undefined);
     return opened;
   } catch (error) {
@@ -514,14 +497,9 @@ async function hostFor(
   }
 }
 
-// Only the stores the config actually names. A deployment that keeps its
-// environment somewhere else, or nowhere, needs no credentials to deploy
-// One store per provider a ref names, opened from the plugins the deployment
-// registered. Nothing is opened for a deployment that names no refs, and a ref
-// no plugin answers for is refused rather than reaching for a vault by name
+// One store per provider a ref names; a ref no plugin answers for is refused
 async function openStores(config: Deployment, log: Log): Promise<SecretStores> {
-  // Services name refs too, and a deployment whose only secret is a database
-  // password opened no store at all until this counted them
+  // Services name refs too, which went uncounted until this
   const refs = [
     ...config.apps.flatMap((app) => [
       ...listRefs(app.secrets),
@@ -564,25 +542,20 @@ async function run(
   configPath: string | undefined,
   options: RunOptions,
 ) {
-  // Folded in before anything opens, so an environment naming an app that is
-  // not there is refused before a connection or a vault
+  // Folded in first, so an environment naming a missing app is refused early
   const config = withEnvironment(await loadConfig(configPath), environment);
 
   // Fail on a missing environment before opening anything for it
   const topology = topologyFor(config, environment);
   const deployHost = environmentOf(config, environment)?.host;
 
-  // The host clones the repositories over this, so it has to exist before the
-  // connection that forwards it is opened. Before the view too: ssh-add asks
-  // for a passphrase on the terminal, and by then the view owns it
+  // Before the connection that forwards it, and before the view owns the terminal
   const agent = needsAgent(config, environment) ? requireAgent() : undefined;
 
-  // Whatever is in flight is killed, the pipeline unwinds through its own
-  // failure path, and the finally below removes the scratch directory
+  // The pipeline unwinds through its own failure path, and the finally tidies up
   const stopping = new AbortController();
 
-  // Everything the run says still reaches the view. The recording is what a
-  // crash log is written from, since the view keeps only each step's tail
+  // The recording is what a crash log is written from, the view keeping only tails
   const recorder = recording(
     createLog({
       ...options,
@@ -592,8 +565,7 @@ async function run(
 
   const log = recorder.log;
 
-  // Before the view closes, so where the log went is among what it writes out.
-  // A log that cannot be written must not replace the failure it was recording
+  // Before the view closes; a log that cannot be written must not mask the failure
   const dumped = async (outcome: string, error?: unknown) => {
     try {
       const path = await dumpCrash(config, recorder.transcript, {
@@ -613,7 +585,7 @@ async function run(
     }
   };
 
-  // Read by the wait below, so a press during it hardens what that is sending
+  // Read by the wait below, so a press during it hardens what is sent
   let hardest: "TERM" | "KILL" = "TERM";
 
   const stop = stopper({
@@ -621,8 +593,7 @@ async function run(
     abort: () => stopping.abort(),
     signal: (name) => {
       hardest = name;
-      // Nothing waits on this: the wait is in the finally, and this is what
-      // makes the command in flight answer so the run can get there
+      // Nothing waits on this; it is what makes the command in flight answer
       void host?.stop(name);
     },
 
@@ -633,8 +604,7 @@ async function run(
     },
   });
 
-  // The viewer reads ctrl+c as a key, because it holds the terminal in raw
-  // mode. Everything else arrives here as a signal
+  // The viewer reads ctrl+c as a key, holding the terminal in raw mode
   process.on("SIGINT", stop);
 
   let host: Host | undefined;
@@ -675,8 +645,7 @@ async function run(
     process.exitCode = 1;
     await dumped("reverted");
   } catch (error) {
-    // Whatever the command in flight said about being killed is noise: what
-    // happened is that somebody asked for it to stop, which is not a crash
+    // Somebody asked for it to stop, which is not a crash
     if (stopping.signal.aborted) {
       log.fail("Stopped");
       process.exitCode = 130;
@@ -686,13 +655,11 @@ async function run(
       await dumped("failed", error);
     }
   } finally {
-    // Nothing leaves while the build is still running. The signal a press
-    // chose is resent every time round, so pressing again hardens it
+    // The chosen signal is resent every time round, so pressing again hardens it
     if (stopping.signal.aborted && host) await gone(host, () => hardest, log.warn);
 
     await host?.close?.();
-    // Leaves the alternate screen and writes the run out on the screen the
-    // person keeps, which is also what lets the process exit
+    // Leaves the alternate screen, which is also what lets the process exit
     log.close();
   }
 }

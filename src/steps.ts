@@ -3,36 +3,28 @@ import type { Built, Plan, Step } from "./pipeline.js";
 import type { Topology } from "./topology.js";
 import type { AppSpec, StepNetwork } from "./types.js";
 
-// The flags that attach one. The deployment network carries the aliases too,
-// because a service answers to its alias rather than its container name, and a
-// step reaching postgres:5432 is the whole reason to be on that network
+// The deployment network carries the aliases, so a step can reach postgres:5432
 export function attachment(network: StepNetwork, topology: Topology): string[] {
   if (network === "host") return ["--network host"];
   if (network === "none") return ["--network none"];
   if (network !== "deployment") return [`--network ${network.named}`];
 
   return [
-    // No address is asked for. Docker allocates from the bottom of the subnet
-    // and every derived address starts at .20, so an ephemeral container never
-    // takes one an app is about to be created on
+    // Docker allocates from the bottom, and derived addresses start at .20
     `--network ${topology.network}`,
     ...Object.entries(topology.extraHosts).map(([name, ip]) => `--add-host ${name}:${ip}`),
   ];
 }
 
 type MigrateOptions = {
-  // The app whose builder image the command runs in. Every app keeps one, so
-  // there is nothing else a config has to set for this to work
+  // The app whose builder image the command runs in; every app keeps one
   app: string;
   command: string;
-  // Defaults to the deploy host's own stack, which is the machine that can
-  // already reach whatever the app's environment file points at. A database
-  // this deployment runs as a service is on "deployment" instead
+  // Defaults to the host's stack; a service of this deployment needs "deployment"
   network?: StepNetwork;
 };
 
-// An ordinary step at an ordinary point. Hung before the swap, it runs while
-// the old containers still serve, and it throws, so nothing retires
+// Hung before the swap it runs while the old containers still serve, and throws
 export function migrate(options: MigrateOptions): Step<`swap:before:${string}`> {
   const command = options.command.split(" ");
 
@@ -44,9 +36,7 @@ export function migrate(options: MigrateOptions): Step<`swap:before:${string}`> 
       const image = builderOf(input, options.app);
       context.task.detail(`${options.app}: ${options.command}`);
 
-      // Nothing from the vault is in the image, so a migration reads its
-      // database url from the environment it is given rather than from a file
-      // the build left behind
+      // Nothing from the vault is in the image, so this reads its url from here
       const app = context.config.apps.find((item) => item.name === options.app);
 
       await context.docker.runOrThrow(
@@ -66,15 +56,13 @@ export function migrate(options: MigrateOptions): Step<`swap:before:${string}`> 
   };
 }
 
-// Checked before the run starts, so a config naming an app that never kept a
-// builder fails without having touched the host
+// Checked before the run starts, so the host is untouched when it fails
 function assertApp(plan: Plan, options: MigrateOptions) {
   if (plan.config.apps.some((item) => item.name === options.app)) return;
   throw new Error(`${options.app} names no app in this deployment`);
 }
 
-// A deployment may replace the build step, and a command hung on the pipeline
-// has to run in an image something actually produced
+// A deployment may replace the build step, so check the image was produced
 export function builderOf(input: Built, name: string) {
   const app = input.apps.find((item) => item.name === name);
   if (app?.builderTag) return app.builderTag;

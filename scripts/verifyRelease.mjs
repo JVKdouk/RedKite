@@ -1,15 +1,15 @@
 import { readFile } from "node:fs/promises";
 
-// Runs from prepublishOnly. A licence nobody can rely on and an author nobody
-// can contact are not fixable by publishing again.
-//
-// Every check here asserts what must be there. Asserting the absence of a
-// placeholder instead let a LICENSE with no copyright line at all pass.
+// Runs from prepublishOnly. Each check asserts presence, not absence of a placeholder
 
 const root = new URL("../", import.meta.url);
 
 const manifest = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
 const licence = await readFile(new URL("LICENSE", root), "utf8");
+const action = await readFile(new URL("action.yml", root), "utf8");
+
+// The action pins the version too, and silently runs the release before last if it drifts
+const pinned = /^ {4}default: (\d+\.\d+\.\d+)$/m.exec(action);
 
 const holder = /^Copyright \(c\) (\d{4}) (.+)$/m.exec(licence);
 
@@ -22,6 +22,10 @@ const problems = [
     !/.+<[^@]+@[^>]+>/.test(manifest.author) &&
     "package.json author has no contact address, expected `Name <email>`",
   !manifest.license && "package.json declares no license",
+  !pinned && "action.yml has no `version` default to check against package.json",
+  pinned &&
+    pinned[1] !== manifest.version &&
+    `action.yml pins redkite ${pinned[1]}, but this is ${manifest.version}`,
 ].filter(Boolean);
 
 if (problems.length === 0) process.exit(0);

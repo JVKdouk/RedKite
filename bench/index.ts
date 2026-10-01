@@ -27,8 +27,7 @@ function table(rows: (string | number)[][], head: string[]) {
   for (const row of all.slice(1)) console.log(line(row));
 }
 
-// The rendered pipeline is the chain now, so this counts the instructions
-// BuildKit would actually re-run rather than a model of them
+// Counts the instructions BuildKit would re-run, not a model of them
 function builderChain(): Op[] {
   const file = renderDockerfile(backend.build, {
     caches: back.caches,

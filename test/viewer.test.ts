@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
 
-import { createViewer } from "../src/cli/viewer.js";
+import type { Step } from "../src/cli/screen.js";
+import { createViewer, spoken } from "../src/cli/viewer.js";
 
 const ALTERNATE_OFF = "\u001b[?25h\u001b[?1049l";
 
-// The alternate screen takes every frame with it, so what a person keeps is
-// whatever close writes on the way out. That is the only way to assert on it.
+// What a person keeps is whatever close writes on the way out
 
 function screen() {
   const written: string[] = [];
@@ -29,8 +29,7 @@ function screen() {
     setEncoding: () => {},
   }) as unknown as NodeJS.ReadStream;
 
-  // Only what comes after the alternate screen is handed back survives it, so
-  // the live frames above are not part of the record
+  // Only what comes after the alternate screen survives
   const kept = () => written.join("").split(ALTERNATE_OFF).slice(1).join("");
 
   return { stream, input, said: kept };
@@ -76,5 +75,57 @@ describe("what is left on the screen after a failure", () => {
 
     assert.ok(!said().includes("build said:"), said());
     assert.ok(!said().includes("compiling"), "output of a step that worked is noise");
+  });
+});
+
+// The record reads the way the run was drawn, with work under its step
+describe("what is left on the screen for a step inside another", () => {
+  it("writes it indented under the step it ran inside", () => {
+    const { stream, input, said } = screen();
+    const view = createViewer(stream, input);
+
+    const build = view.step("build");
+    build.step("Building backend").done("abc1234");
+    build.done();
+    view.close();
+
+    assert.match(said(), /^✔ build \(\d+s\)$/m);
+    assert.match(said(), /^ {2}✔ Building backend: abc1234 \(\d+s\)$/m);
+  });
+});
+
+// A phase whose work is in its children would otherwise read as silent
+describe("a step speaking for the steps it runs inside", () => {
+  const row = (label: string, over: Partial<Step> = {}): Step => ({
+    label,
+    started: 0,
+    state: "running",
+    lines: [],
+    expanded: false,
+    held: false,
+    offset: 0,
+    depth: 0,
+    spoke: 0,
+    ...over,
+  });
+
+  it("marks every step above it as having spoken, however deep", () => {
+    const steps = [
+      row("build"),
+      row("Building backend", { parent: 0, depth: 1 }),
+      row("installing", { parent: 1, depth: 2 }),
+    ];
+
+    const after = spoken(steps, 1, 5000);
+
+    assert.equal(after[1]?.spoke, 5000);
+    assert.equal(after[0]?.spoke, 5000);
+    assert.equal(after[2]?.spoke, 0, "not the step that spoke, which marks itself");
+  });
+
+  it("leaves everything alone for a step at the top", () => {
+    const steps = [row("setup"), row("build")];
+
+    assert.deepEqual(spoken(steps, undefined, 5000).map((step) => step.spoke), [0, 0]);
   });
 });

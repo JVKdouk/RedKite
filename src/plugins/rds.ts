@@ -6,10 +6,7 @@ import { definePlugin, type Plugin } from "../plugin.js";
 
 import { slug, snapshotName, type SnapshotPoint } from "./snapshot.js";
 
-// A snapshot of a managed Postgres or MySQL, taken before anything migrates it.
-// Through the AWS CLI rather than the REST API: signing a request by hand is a
-// page of crypto that nothing here could check, and every runner already has
-// the CLI with the credentials the job was given.
+// Through the AWS CLI, which every runner already has, rather than the REST API
 
 const run = promisify(execFile);
 
@@ -20,13 +17,10 @@ export type RdsSnapshotOptions = {
   // The instance to snapshot, or the cluster for Aurora. One of them
   instance?: string;
   cluster?: string;
-  // Goes in front of the snapshot's name, which carries the environment and
-  // the minute after it
+  // Goes in front of the snapshot's name, which carries environment and minute
   name?: string;
   region?: string;
-  // Waits for the snapshot to finish rather than only to start. RDS captures
-  // the data when it begins, so this is about learning it worked rather than
-  // about the restore point, and it can take a very long time
+  // Waits for the snapshot to finish, not only to start, which can take long
   wait?: boolean;
   aws?: Aws;
 };
@@ -54,9 +48,7 @@ function snapshotStep(options: RdsSnapshotOptions): Step<SnapshotPoint> {
 
       await aws(create(options, identifier));
 
-      // The data is captured when it begins, so this is not what makes the
-      // restore point good. It is what turns a snapshot that silently failed
-      // into a deploy that stops before the migration
+      // Turns a snapshot that silently failed into a deploy that stops first
       if (options.wait) {
         context.task.detail(`waiting for ${identifier}`);
         await aws(ready(options, identifier));
@@ -110,9 +102,7 @@ function ready(options: RdsSnapshotOptions, identifier: string) {
   return ["rds", "wait", "db-snapshot-available", "--db-snapshot-identifier", identifier, ...region];
 }
 
-// An instance and a cluster are different API calls against different things,
-// and guessing which was meant is worse than being told. Checked where the
-// plugin is written rather than where it runs, so the config fails to load
+// Checked where the plugin is written, so the config fails to load
 function assertOneTarget(options: RdsSnapshotOptions) {
   if (options.instance && options.cluster) {
     throw new Error(

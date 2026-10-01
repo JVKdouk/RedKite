@@ -6,15 +6,13 @@ import type { Deployment } from "../src/index.js";
 import { Docker, driftOf, fingerprintOf, plannedServices, redis, topologyFor } from "../src/index.js";
 import { fakeHost } from "./fakes.js";
 
-// A service outlives a deploy, so the config that created one is not the config
-// the file now holds. What is asserted here is that every change which needs a
-// container to be made again is one this can see.
+// Asserts that every change needing a new container is visible here
 
 const topology = topologyFor(config, "staging");
 const planned = plannedServices(config, topology);
 const proxy = planned[0]!;
 
-// Every edit below spreads rather than mutates, so the shared config stands
+// Every edit below spreads rather than mutates the shared config
 const changes = (edit: (config: Deployment) => Deployment) => {
   const after = edit(config as Deployment);
   const moved = topologyFor(after, "staging");
@@ -30,8 +28,7 @@ describe("the services a run brings up", () => {
     );
   });
 
-  // Nothing serves in a verify run, so the proxy would resolve upstreams that
-  // were never created and take a published port for them
+  // Nothing serves in a verify run, so the proxy would resolve nothing
   it("leaves the proxy out of a verify run", () => {
     const checking = plannedServices(config, topology, "verify");
 
@@ -73,8 +70,7 @@ describe("what a service was created from", () => {
     assert.notEqual(before, changes((c) => ({ ...c, proxy: { image: "nginx:1.27" } })));
   });
 
-  // The value is never read: whether the running config is the current one is a
-  // question a plan answers without unlocking a vault
+  // Never read, so a plan answers without unlocking a vault
   it("changes when a secret is named differently, without reading it", () => {
     const service = planned.find((item) => item.spec.name === "redis")!;
     const named = { ...service, spec: redis({ address: 26 }) };
@@ -132,5 +128,21 @@ describe("drift against the host", () => {
       drifted.map((item) => item.reason),
       planned.map(() => "unrecognised"),
     );
+  });
+});
+
+describe("the services of a deployment with no proxy", () => {
+  it("brings up the listed services and no proxy", () => {
+    const proxyless = {
+      ...config,
+      proxy: false,
+      apps: config.apps.map((app) => ({ ...app, route: undefined })),
+      environments: { staging: { branch: "staging", subnet: "172.255.0" } },
+    } satisfies Deployment;
+
+    const planned = plannedServices(proxyless, topologyFor(proxyless, "staging"));
+
+    assert.ok(planned.length > 0, "the services are still there");
+    assert.ok(!planned.some((item) => item.spec.name === "nginx"));
   });
 });

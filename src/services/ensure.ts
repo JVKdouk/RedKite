@@ -8,26 +8,22 @@ import type { ServiceSpec } from "../types.js";
 
 import { fingerprintOf, type PlannedService } from "./planned.js";
 
-// redis.ts and nginx.ts were the same object described twice: ensure a sidecar
-// from an image is running, at an address, with a configuration file.
+// Ensures a sidecar from an image is running, at an address, with a config file
 
 export type EnsureContext = {
   host: Host;
   docker: Docker;
   topology: Topology;
-  // Rendered by the caller, so this file does not have to know what nginx is
+  // Rendered by the caller, so this file need not know what nginx is
   files: Record<string, string>;
-  // One store per provider a service names. A service without secrets never
-  // opens one
+  // One store per provider a service names; without secrets none is opened
   secrets: SecretStores;
   log: Log;
-  // Set for the proxy alone. Nothing else is reachable from outside the host,
-  // and nothing else has to resolve the apps by name
+  // The proxy alone: nothing else is reachable or resolves the apps by name
   publish?: number;
 };
 
-// What became of one service, for a deploy that says what it did rather than
-// whether something changed
+// What became of one service, so a deploy can say what it did
 export type Ensured = "adopted" | "started" | "created" | "recreated";
 
 export async function ensureService(
@@ -40,9 +36,7 @@ export async function ensureService(
   const fingerprint = fingerprintOf(plannedFrom(spec, service, context), context.topology);
 
   if (await docker.container.exists(name)) {
-    // A service outlives a deploy, so being there is usually the whole answer.
-    // Being there having been created from something else is not: a changed
-    // public port or a rendered config only reaches a container that is made
+    // Being there is usually enough, but a changed config only reaches a new container
     if (await docker.container.specOf(name) === fingerprint) {
       if (await docker.container.isRunning(name)) return "adopted";
 
@@ -66,9 +60,7 @@ export async function ensureService(
   return "created";
 }
 
-// The same shape the plan compares against, assembled from what this call was
-// handed. Two spellings of it would drift from each other rather than from the
-// host, which is the one drift nothing here would report
+// The same shape the plan compares against, so the two cannot drift apart
 function plannedFrom(
   spec: ServiceSpec,
   service: ServiceTopology,
@@ -102,9 +94,7 @@ async function createService(
     builder.env(name, value);
   }
 
-  // Written to the host and handed over as a file, so the value never appears
-  // in an argument list. Docker reads it when the container is created and
-  // keeps the values, so the file goes with the rest of the deploy's scratch
+  // Handed over as a file, so no value appears in an argument list
   if (spec.secrets) {
     const contents = await readEnv(spec.secrets, context.secrets);
     builder.envFile(await context.host.write(`services/${name}/env`, contents));
@@ -125,8 +115,7 @@ async function createService(
   await builder.create();
 }
 
-// Three lines of Dockerfile on the host, in place of a container assembled in
-// an engine, exported as a tarball and loaded back in
+// Three lines of Dockerfile on the host, in place of an exported tarball
 async function buildImage(
   spec: ServiceSpec,
   name: string,

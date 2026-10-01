@@ -28,7 +28,7 @@ jobs:
       # and a verify environment names no host to reach. The runner needs no
       # key at all, which is the point of testing the tree in the pull request
       # rather than the branch it was pushed from
-      - uses: JVKdouk/redkite@v1
+      - uses: JVKdouk/redkite@v0
         with:
           command: verify
           environment: test
@@ -39,7 +39,7 @@ jobs:
       # a cancelled or finished run leaves behind is those. Stopped rather than
       # removed, so the next run adopts them instead of building them again
       - if: always()
-        uses: JVKdouk/redkite@v1
+        uses: JVKdouk/redkite@v0
         with:
           command: down
           environment: test

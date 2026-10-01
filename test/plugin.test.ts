@@ -12,11 +12,9 @@ import {
   storeFor,
 } from "../src/index.js";
 
-// Nothing a plugin carries happens until a deployment lists it, redkite's own
-// vault included. What is asserted here is that opting in is the only way in.
+// Asserts that opting in is the only way a plugin's work happens
 
-// The loader fills environments in, and defineDeployment refuses one that
-// carries them, so the shape a config file actually has is this
+// The shape a config file actually has, with environments filled by the loader
 const { environments: _, ...authored } = base as Deployment;
 
 const noop = definePlugin({
@@ -31,8 +29,7 @@ describe("registering a plugin", () => {
     assert.deepEqual(pluginSteps([noop]).map((step) => step.point), ["setup:after:noop"]);
   });
 
-  // Two of the same is either a mistake or two configurations of one thing,
-  // and neither is something to pick a winner for
+  // A mistake or two configurations, and neither has a winner to pick
   it("refuses the same plugin twice", () => {
     assert.throws(
       () => defineDeployment({ ...authored, plugins: [noop, noop] }),
@@ -40,8 +37,7 @@ describe("registering a plugin", () => {
     );
   });
 
-  // A plugin's point and the deployment's own share one space, so the clash
-  // worth catching is between them rather than within either
+  // Both share one space, so the collision worth catching is between them
   it("refuses a plugin claiming a point the deployment already claims", () => {
     assert.throws(
       () =>
@@ -72,7 +68,7 @@ describe("finding the store for a provider", () => {
     assert.ok(storeFor([noop, bitwarden()], "bitwarden"));
   });
 
-  // Two vaults for one tag is a config nobody can read the intent of
+  // Two vaults for one tag has no readable intent
   it("refuses two plugins claiming one provider", () => {
     const other = definePlugin({
       name: "other",
@@ -91,8 +87,7 @@ describe("the vault as a plugin", () => {
     assert.ok(storeFor([bitwarden()], item.provider));
   });
 
-  // Two services, one plugin. Both answer for the same provider tag, because
-  // to an app a secret is a secret whichever Bitwarden holds it
+  // Both answer for one provider: to an app, a secret is a secret
   it("answers for its provider whichever Bitwarden it reads", () => {
     assert.ok(storeFor([bitwarden()], "bitwarden"), "secrets manager");
     assert.ok(storeFor([bitwarden({ secrets: false })], "bitwarden"), "password manager");

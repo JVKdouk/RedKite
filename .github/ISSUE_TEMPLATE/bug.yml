@@ -1,0 +1,69 @@
+name: Bug
+description: Something redkite did that it should not have
+labels: [bug]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a security issue, do not file it here. `SECURITY.md` says
+        where it goes.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, and what it did instead of what you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: The relevant part of your redkite.config.ts
+      description: >-
+        Most of what redkite does is derived from this file, so the shape of it
+        is usually the answer. Trim it to the apps and services involved, and
+        take your hostnames out.
+      render: ts
+    validations:
+      required: true
+
+  - type: textarea
+    id: plan
+    attributes:
+      label: What `redkite plan` says
+      description: >-
+        `plan` touches nothing and prints every derived name, address and
+        pipeline step. When the derivation is what went wrong, this is where it
+        shows.
+      render: text
+
+  - type: textarea
+    id: crash
+    attributes:
+      label: The crash log
+      description: >-
+        A failed run writes one to /tmp and says the path. It holds everything
+        every step said, so read it before pasting: whatever your build printed
+        is in there too.
+      render: text
+
+  - type: input
+    id: versions
+    attributes:
+      label: redkite, node, and docker on the host
+      placeholder: redkite 0.1.14, node 22.18.0, docker 27.3.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it ran
+      options:
+        - A terminal
+        - GitHub Actions
+        - Another CI
+    validations:
+      required: true

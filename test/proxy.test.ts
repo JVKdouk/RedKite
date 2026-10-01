@@ -13,9 +13,7 @@ import {
   type ProxySpec,
 } from "../src/index.js";
 
-// The configuration a hand-written template produced, kept as a file rather
-// than as a string in the test, so this compares against something a person
-// can read as nginx rather than against a paraphrase of it
+// Kept as a file, so this compares against nginx rather than a paraphrase
 const today = readFileSync(
   new URL("./fixtures/nginx.today.conf", import.meta.url),
   "utf8",
@@ -29,8 +27,7 @@ const meaningful = (text: string) =>
     .map((line) => line.trim())
     .filter(Boolean);
 
-// Both files parsed the same way, so the comparison is per location rather
-// than over a flat set of lines that hides which block a header came from
+// Parsed the same way, so the comparison is per location, not a flat set
 function locations(text: string) {
   const blocks = text.split(/location /).slice(1);
 
@@ -59,7 +56,7 @@ describe("nginx renderer", () => {
       ];
     });
 
-    // The one difference is the header whose absence made request.ip wrong
+    // The one difference is the header whose absence broke request.ip
     assert.deepEqual(changes, [
       "+ / proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
     ]);
@@ -117,8 +114,7 @@ describe("nginx renderer", () => {
   });
 });
 
-// What redkite derives is the server block and the upstreams. What goes around
-// them is written by hand, and nginx is strict about what may be said twice.
+// The rest is written by hand, and nginx is strict about what may repeat
 describe("what a deployment adds to the server block", () => {
   const render = (proxy: Parameters<typeof renderProxy>[1]) =>
     renderProxy(topologyFor(config, "staging"), proxy);
@@ -139,8 +135,7 @@ describe("what a deployment adds to the server block", () => {
     assert.equal(output.split("proxy_buffering off;").length - 1, config.apps.length);
   });
 
-  // nginx refuses a second proxy_read_timeout outright rather than letting the
-  // later one win, so a line written by hand replaces rather than repeats
+  // nginx refuses a second one, so a hand-written line replaces it
   it("replaces what redkite set rather than saying it twice", () => {
     const output = render({ location: ["proxy_read_timeout 300s;"] });
 
@@ -155,8 +150,7 @@ describe("what a deployment adds to the server block", () => {
     assert.ok(!output.includes("client_max_body_size 8M;"));
   });
 
-  // Several of these are expected and all of them are kept, which is why the
-  // header's name is part of what identifies the line
+  // All are kept, so the header's name is part of what identifies the line
   it("keeps every header, and replaces only the one named twice", () => {
     const output = render({
       location: ["proxy_set_header Upgrade $http_upgrade;", "proxy_set_header Host $host;"],
@@ -168,15 +162,13 @@ describe("what a deployment adds to the server block", () => {
     assert.ok(output.includes("proxy_set_header X-Forwarded-Proto $scheme;"));
   });
 
-  // The published port maps onto the one inside the container, so both sides
-  // have to agree and only one of them may say it
+  // Both sides have to agree, and only one of them may say it
   it("refuses a server block that says what to listen on", () => {
     assert.throws(() => render({ server: ["listen 8080;"] }), /publicPort is published onto/);
   });
 });
 
-// A long-polling API wants a longer read timeout than the pages beside it, and
-// a setting for every location was the only kind there was
+// A long-polling API wants a longer read timeout than the pages beside it
 describe("settings for one app's location", () => {
   const render = (proxy: ProxySpec) => renderProxy(topologyFor(config, "staging"), proxy);
 
@@ -218,8 +210,7 @@ describe("settings for one app's location", () => {
     );
   });
 
-  // Where a location sends a request is its app's route. Replacing that is not
-  // a setting but a route that goes somewhere else
+  // Replacing proxy_pass is not a setting but a route that goes elsewhere
   it("refuses a location that says where to send the request", () => {
     assert.throws(
       () => render({ locations: { backend: ["proxy_pass http://elsewhere;"] } }),
@@ -234,8 +225,7 @@ describe("what the proxy logs, and where", () => {
   const render = (proxy: ProxySpec) => renderProxy(topologyFor(config, "staging"), proxy);
   const withProxy = (proxy: ProxySpec) => ({ ...config, proxy }) satisfies Deployment;
 
-  // A deployment that says nothing keeps the config it had, so the proxy it runs
-  // is not recreated for a change that means nothing to it
+  // A config that says nothing is not recreated for a change meaning nothing
   it("leaves logging to the image when nothing is said", () => {
     const output = render({});
 
@@ -257,26 +247,82 @@ describe("what the proxy logs, and where", () => {
     assert.ok(output.includes("error_log /dev/stderr error;"));
   });
 
-  it("writes files named for the environment into a directory", () => {
+  it("writes to files in the directory, and to docker as well", () => {
     const output = render({ logs: { directory: "/var/log/acme" } });
+
+    for (const line of [
+      "access_log /var/log/nginx/staging.access.log;",
+      "access_log /dev/stdout;",
+      "error_log /var/log/nginx/staging.error.log error;",
+      "error_log /dev/stderr error;",
+    ]) {
+      assert.ok(output.includes(line), line);
+    }
+  });
+
+  it("stops writing to docker when asked, and keeps the files", () => {
+    const output = render({ logs: { directory: "/var/log/acme", docker: false } });
 
     assert.ok(output.includes("access_log /var/log/nginx/staging.access.log;"));
     assert.ok(output.includes("error_log /var/log/nginx/staging.error.log error;"));
+    assert.ok(!output.includes("/dev/stdout"));
+    assert.ok(!output.includes("/dev/stderr"));
   });
 
-  it("turns the access log off alone, and keeps errors at the level asked for", () => {
-    const output = render({ logs: { directory: "/var/log/acme", access: false, errors: "warn" } });
+  it("names the files as the config asks", () => {
+    const output = render({ logs: { directory: "/var/log/acme", access: "access.log", error: "error.log" } });
+
+    assert.ok(output.includes("access_log /var/log/nginx/access.log;"));
+    assert.ok(output.includes("error_log /var/log/nginx/error.log error;"));
+  });
+
+  it("turns the access log off everywhere, and writes errors at the level asked for", () => {
+    const output = render({ logs: { directory: "/var/log/acme", access: false, level: "warn" } });
 
     assert.ok(output.includes("access_log off;"));
+    assert.ok(!output.includes("staging.access.log"));
+    assert.ok(!output.includes("access_log /dev/stdout;"));
     assert.ok(output.includes("error_log /var/log/nginx/staging.error.log warn;"));
+    assert.ok(output.includes("error_log /dev/stderr warn;"));
   });
 
-  it("logs from the server block, where a line written by hand replaces it", () => {
-    const output = render({ logs: {}, server: ["access_log /dev/null;"] });
-    const at = output.indexOf("access_log /dev/null;");
+  it("logs from the server block, where a destination written by hand is added", () => {
+    const output = render({ logs: {}, server: ["access_log /var/log/nginx/extra.log;"] });
+    const at = output.indexOf("access_log /var/log/nginx/extra.log;");
 
     assert.ok(at > output.indexOf("server {") && at < output.indexOf("location "));
+    assert.ok(output.includes("access_log /dev/stdout;"), "beside the one redkite set");
+  });
+
+  it("lets access_log off written by hand replace every destination", () => {
+    const output = render({ logs: { directory: "/var/log/acme" }, server: ["access_log off;"] });
+
+    assert.ok(output.includes("access_log off;"));
     assert.ok(!output.includes("access_log /dev/stdout;"));
+    assert.ok(!output.includes("staging.access.log"));
+  });
+
+  // Inside the container, a file is gone the next time the proxy is made
+  it("refuses a file name with no directory to write it in", () => {
+    assert.throws(() => render({ logs: { access: "access.log" } }), /no directory to write it in/);
+  });
+
+  it("refuses a file name that is a path", () => {
+    assert.throws(
+      () => render({ logs: { directory: "/var/log/acme", error: "../error.log" } }),
+      /has to be a file name/,
+    );
+  });
+
+  it("refuses a config that would write nowhere, and says what does that", () => {
+    assert.throws(() => render({ logs: { docker: false } }), /says logs: false/);
+  });
+
+  it("refuses the access and error logs writing one file", () => {
+    assert.throws(
+      () => render({ logs: { directory: "/var/log/acme", access: "nginx.log", error: "nginx.log" } }),
+      /one file/,
+    );
   });
 
   it("mounts the directory where nginx writes", () => {
@@ -292,8 +338,7 @@ describe("what the proxy logs, and where", () => {
     }
   });
 
-  // Docker reads a relative path as the name of a volume, and the logs would go
-  // into one nobody named
+  // Docker reads a relative path as a volume name, and the logs land in one
   it("refuses a directory docker would read as a volume name", () => {
     assert.throws(
       () => topologyFor(withProxy(nginx({ logs: { directory: "logs/nginx" } })), "staging"),

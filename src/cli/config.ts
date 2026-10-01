@@ -5,32 +5,19 @@ import { pathToFileURL } from "node:url";
 
 import type { Deployment, Environment } from "../types.js";
 
-// Found by convention rather than named on the command line. A repository has
-// one deployment, and requiring the path is a flag nobody ever varies.
-//
-// The environments live beside it, one file each, so the thing that differs
-// between staging and production is a file rather than a key several levels
-// down a literal.
+// Found by convention; the environments live beside it, one file each
 
 const EXTENSIONS = ["ts", "mts", "js", "mjs"] as const;
 
 const CANDIDATES = EXTENSIONS.map((extension) => `redkite.config.${extension}`);
 
-// Anything beside the deployment that starts with redkite and is a module it
-// could read. The .config in the middle is what people write and what the docs
-// say, and it is optional here because a file that was meant to be an
-// environment and is named slightly differently should be read and refused
-// rather than passed over as though it were not there
+// The .config is optional here, so a near-miss name is read and refused, not skipped
 const PER_ENVIRONMENT = /^redkite[.\-_](.+?)(?:\.config)?\.(?:ts|mts|cts|js|mjs|cjs)$/;
 
-// What an environment may be called. It becomes part of an image tag, and an
-// image tag cannot hold a capital, so this is docker's limit rather than ours
+// It becomes part of an image tag, so this is docker's limit rather than ours
 const ENVIRONMENT_NAME = /^[a-z0-9][a-z0-9._-]*$/;
 
-// Node strips types itself from 22.18 on, which is what lets redkite ship with
-// no dependencies. These are the ways that can fail on a config it cannot read.
-// A SyntaxError is the same class of failure: a package without "type":
-// "module" makes a .ts file CommonJS, where an import statement is not legal
+// The ways Node's own type stripping fails on a config it cannot read
 const LOADER = new Set([
   "ERR_UNKNOWN_FILE_EXTENSION",
   "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX",
@@ -45,9 +32,7 @@ export async function loadConfig(explicit?: string): Promise<Deployment> {
   const manifest = manifestOf(explicit ? dirname(path) : process.cwd());
   const beside = await loadEnvironments(dirname(path));
 
-  // The directory package.json names is read whether or not the deployment
-  // turned out to be in it, so environments may sit together under one roof
-  // with the deployment at the root above them
+  // Read either way, so environments may sit together under a deployment at the root
   const declared = directoryOf(manifest);
   const under = declared && declared !== dirname(path) ? await loadEnvironments(declared) : {};
 
@@ -75,12 +60,9 @@ export async function loadConfig(explicit?: string): Promise<Deployment> {
   return { ...rooted(config, dirname(path)), environments: { ...found, ...named } };
 }
 
-// A source path belongs to the file that named it, not to wherever the command
-// was run. Resolving it here is what lets a deploy from a workspace and one
-// from the root build the same tree
+// Resolved here, so a deploy from a workspace and from the root build the same tree
 function rooted(config: Deployment, directory: string): Deployment {
-  // A file that never called defineDeployment can export anything, and the
-  // message worth getting is the one topologyFor gives rather than a TypeError
+  // A file that never called defineDeployment can export anything
   if (!(config.apps ?? []).some((app) => app.path)) return config;
 
   return {
@@ -91,8 +73,7 @@ function rooted(config: Deployment, directory: string): Deployment {
   };
 }
 
-// package.json may name the file each environment lives in, for a repository
-// that keeps them somewhere the naming convention would not find them
+// For a repository keeping them where the naming convention would not find them
 async function loadNamed(manifest: Manifest | undefined) {
   const declared = manifest?.redkite.environments;
   if (!manifest || !declared) return {};
@@ -115,21 +96,16 @@ async function loadNamed(manifest: Manifest | undefined) {
   return environments;
 }
 
-// A deployment is one file at the root of the project, and a deploy is as
-// likely to be run from a workspace inside it as from there
+// A deploy is as likely to be run from a workspace inside the project as from its root
 export function discover(from: string): string {
   let directory = from;
-  // Where something addressed to redkite was seen but no deployment. Naming it
-  // is the difference between "there is nothing here" and "the file you have
-  // is an environment, and an environment is not a deployment"
+  // Naming it separates "nothing here" from "that file is an environment"
   const nearby: string[] = [];
 
   for (;;) {
     const declared = directoryFrom(directory);
 
-    // Naming a directory that is not there is a mistake worth stopping for.
-    // One that is there and holds no deployment is not: it may hold only the
-    // environments, and the deployment may sit at the root above them
+    // A missing directory stops the run; one holding only environments does not
     if (declared && !existsSync(declared)) missing(declared, directory);
 
     const there = declared && found(declared);
@@ -163,8 +139,7 @@ export function discover(from: string): string {
   );
 }
 
-// The names beside a deployment that would be read as environments, for a
-// message that can say what was there instead of what was not
+// For a message that can say what was there instead of what was not
 function environmentsAt(directory: string) {
   if (!existsSync(directory)) return [];
 
@@ -220,8 +195,7 @@ function missing(declared: string, from: string): never {
   );
 }
 
-// What a package.json says about redkite, and where it said it. The paths it
-// names are read against its own directory rather than the working one
+// Its paths are read against its own directory rather than the working one
 type Manifest = {
   root: string;
   redkite: { directory?: unknown; environments?: Record<string, unknown> };
@@ -243,16 +217,13 @@ function manifestAt(directory: string): Manifest | undefined {
   }
 }
 
-// Where the project starts, which is where a .env belongs. The nearest
-// package.json above wherever this was run, and the directory itself when
-// there is none
+// The nearest package.json above, or the directory itself when there is none
 export function projectRoot(explicit?: string) {
   const from = explicit ? dirname(resolve(explicit)) : process.cwd();
   return manifestOf(from)?.root ?? from;
 }
 
-// The nearest one above wherever this was run, which is the same walk the
-// config itself is found by
+// The same walk the config itself is found by
 function manifestOf(from: string) {
   let directory = from;
 
@@ -267,8 +238,7 @@ function manifestOf(from: string) {
   }
 }
 
-// package.json says where redkite's files live, for a repository that would
-// rather not keep them at its root
+// For a repository that would rather not keep them at its root
 function directoryFrom(directory: string) {
   return directoryOf(manifestAt(directory));
 }
@@ -283,8 +253,7 @@ function directoryOf(manifest: Manifest | undefined) {
 function defaultOf(module: unknown, path: string) {
   const found = module as { default?: { default?: unknown } };
 
-  // A config inside a CommonJS package transpiles to CommonJS, and Node hands
-  // back the whole module.exports as the default, wrapping the real one
+  // In a CommonJS package Node hands back module.exports, wrapping the real default
   const config = found.default?.default ?? found.default;
   if (config) return config;
 
@@ -299,8 +268,7 @@ async function load(path: string) {
   } catch (error) {
     if (!unreadable(error)) throw error;
 
-    // tsx resolves what Node will not: a path mapped by tsconfig, and the
-    // ./thing.js specifier TypeScript writes for a sibling ./thing.ts
+    // tsx resolves a tsconfig path, and the ./thing.js specifier written for a .ts
     const register = await tsxFrom(dirname(path));
     if (!register) throw cannotRead(path, error);
 
@@ -314,8 +282,7 @@ async function load(path: string) {
   }
 }
 
-// Resolved from the project being deployed rather than depended on, so redkite
-// installs as one package and still reads a config that needs more
+// Resolved from the project, so redkite installs as one package and still reads it
 async function tsxFrom(directory: string) {
   try {
     const require = createRequire(join(directory, "redkite.js"));
@@ -336,8 +303,7 @@ function unreadable(error: unknown): error is Error {
   return "code" in error && typeof error.code === "string" && LOADER.has(error.code);
 }
 
-// Node reads TypeScript itself, within limits a config can run into. Each of
-// them has a one line fix, and none of them is obvious from what Node throws
+// Each limit has a one line fix, and none is obvious from what Node throws
 function cannotRead(path: string, error: Error) {
   const remedies = [
     '  · A package without "type": "module" makes a .ts file CommonJS, where',

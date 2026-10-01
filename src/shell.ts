@@ -2,24 +2,19 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 import { lineReader, tail, type OnLine, type Result } from "./host.js";
 
-// One child process, its output collected and streamed. Both hosts ran their
-// own copy of this, and shipping an image needs a third caller.
+// One child process, its output collected and streamed
 
 export type SpawnOptions = {
   stdin?: string;
   onLine?: OnLine;
-  // Only stops a command being started. What is already running is stopped by
-  // signalling it, which is the host's to do: over ssh the process to signal is
-  // on the other machine, and killing the client here would only lose the reach
+  // Only stops a command being started; what runs is the host's to signal
   signal?: AbortSignal;
 };
 
-// Every child still running. A detached child outlives this process, so a stop
-// that does not go through here leaves a build running
+// A detached child outlives this process, so every stop goes through here
 const live = new Set<ChildProcess>();
 
-// Signals every group and answers with how many are still there. The count is
-// the whole point: nothing may exit while it is above zero
+// The count is the point: nothing may exit while it is above zero
 export function signalEverything(name: NodeJS.Signals) {
   for (const child of live) {
     try {
@@ -44,8 +39,7 @@ export function spawnCollect(
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) return reject(new Error("Stopped"));
 
-    // Its own process group, so one signal reaches everything it started. A
-    // shell that ran docker dies on its own otherwise, and docker keeps going
+    // Its own process group, so one signal reaches everything it started
     const child = spawn(command, args, {
       stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       detached: true,
@@ -65,8 +59,7 @@ export function spawnCollect(
     const stdout = collect(out);
     const stderr = collect(err);
 
-    // Only a streamed command is truncated. The host snapshot is one command
-    // listing every container and image, and a busy host overruns any tail
+    // Only a streamed command is truncated; a host snapshot overruns any tail
     const keep = (lines: string[]) => (options.onLine ? tail(lines) : lines.join("\n"));
 
     child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk.toString()));
@@ -74,8 +67,7 @@ export function spawnCollect(
 
     child.on("error", reject);
 
-    // The only thing that settles this. A signalled command answers here once
-    // it has actually gone, which is what lets a caller wait for exactly that
+    // A signalled command answers here once it has actually gone
     child.on("close", (code) => {
       live.delete(child);
 
@@ -88,8 +80,7 @@ export function spawnCollect(
   });
 }
 
-// Single quotes are what a shell strips, so a value containing double quotes
-// survives being handed to one
+// Single quotes are what a shell strips, so double quotes survive
 export function quote(value: string) {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }

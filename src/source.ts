@@ -1,70 +1,56 @@
 import type { Host } from "./host.js";
-import { tag } from "./log.js";
 
-// Getting the source onto the machine that builds it. A repository the host
-// clones for itself over the forwarded agent, so no tree crosses the wire: a
-// commit that is already mirrored costs a fetch of whatever is new since the
-// last deploy. A directory is already there and is built as it stands.
+// The host clones for itself over the forwarded agent, so no tree crosses the wire
 
 export type Source = {
-  // What the image is tagged by: the commit for a repository, and the content
-  // of the working tree for a directory
+  // The commit for a repository, the working tree's content for a directory
   release: string;
   // What the build reads, on the machine that builds it
   tree: string;
 };
 
-// What a clone is resolved against. A branch is tracked and a tag or a commit
-// is pinned, and which of the three it is decides where git is asked to look
+// A branch is tracked, a tag or commit pinned, which decides where git looks
 export type RefKind = "branch" | "tag" | "commit";
 
 export type Ref = { kind: RefKind; name: string };
 
 export type SourceRequest = {
-  // Names the mirror and the checkout. Keyed per app and environment rather
-  // than per repository, so two deploys never fetch into one directory at once
+  // Keyed per app and environment, so two deploys never fetch into one directory
   name: string;
   // Exactly one of these, which is what the config is checked for
   repo?: string;
   path?: string;
-  // What of a path goes into the build. Absent leaves it to the work tree's
-  // own .gitignore, which is the only other thing that can say
+  // Absent leaves it to the work tree's own .gitignore
   include?: string[];
   ref: Ref;
   submodules: boolean;
   detail?: (message: string) => void;
-  // Every line git writes. A first clone of a large repository is the slowest
-  // part of a build and it used to say nothing at all while it happened
+  // Every line git writes: a first clone is the slowest part of a build
   output?: (line: string) => void;
 };
 
-// Where each kind lives. A tag is peeled, so an annotated one answers with the
-// commit it points at rather than with the tag object
+// A tag is peeled, so an annotated one answers with the commit it points at
 const REVISION: Record<RefKind, (name: string) => string> = {
   branch: (name) => `refs/heads/${name}`,
   tag: (name) => `refs/tags/${name}^{commit}`,
   commit: (name) => `${name}^{commit}`,
 };
 
-// Hosts common enough to be worth a tag in place of their name
-const HOSTS: Record<string, string> = { "github.com": "GH" };
+// Hosts common enough that the path alone names the repository
+const WELL_KNOWN = new Set(["github.com"]);
 
-// user@host:path, or scheme://user@host/path, with the .git every clone URL ends
-// in. Anything that is not one of those, a directory for instance, has no host
+// user@host:path or scheme://user@host/path; a directory has no host
 const REMOTE = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^@/]+@)?([^:/]+)[:/](.+?)(?:\.git)?\/?$/;
 
-// How a repository is named on screen: the host as a tag where it is a known
-// one, and the path without the .git that says nothing a person needs
+// The path without the .git, and the host too where it is not a well known one
 export function describeRepo(repo: string) {
   const match = REMOTE.exec(repo);
   if (!match?.[1] || !match[2]) return repo.replace(/\.git$/, "");
 
-  const known = HOSTS[match[1]];
-  return known ? `${tag(known)} ${match[2]}` : `${match[1]}:${match[2]}`;
+  return WELL_KNOWN.has(match[1]) ? match[2] : `${match[1]}:${match[2]}`;
 }
 
-// A branch is what is tracked nearly always, so it goes by its name alone. A tag
-// or a commit is a pin, and says which kind it is
+// A branch goes by name alone; a tag or commit says which kind of pin it is
 export function describeRef(ref: Ref) {
   return ref.kind === "branch" ? ref.name : `${ref.kind} ${ref.name}`;
 }
@@ -82,8 +68,7 @@ export async function prepareSource(
   throw new Error(`${request.name} names neither a repo nor a path to build from`);
 }
 
-// Built where it sits. Nothing is cloned, checked out or cleaned: what the
-// build reads is the tree as the person running this left it
+// Built where it sits: the tree as the person running this left it
 async function localSource(
   host: Host,
   path: string,
@@ -100,9 +85,7 @@ async function localSource(
   return { release, tree: path };
 }
 
-// Something has to say what belongs in the build. A work tree's .gitignore
-// does; anywhere else the deployment has to say it, or the release would cover
-// whatever happened to be lying in the directory
+// Outside a work tree the deployment has to say what belongs in the build
 async function assertKnowable(host: Host, path: string, include?: string[]) {
   if (include) return;
 
@@ -116,14 +99,9 @@ async function assertKnowable(host: Host, path: string, include?: string[]) {
   );
 }
 
-// git's own content addressing, over a scratch repository so nothing about the
-// source changes and no object lands in it. The tree covers what is committed,
-// what is modified and what is untracked, so an edit that is never committed is
-// a new release. Without an include it honours .gitignore, which is the same
-// set the build reads
+// Content addressing over a scratch repository, covering even uncommitted edits
 async function treeOf(host: Host, path: string, include?: string[]) {
-  // Everything the work tree does not ignore, or exactly what was named. The
-  // -- is only for the second: it would make -A a path rather than a flag
+  // The -- is only for the named form: it would make -A a path rather than a flag
   const added = include ? `-- ${include.map((item) => `'${item}'`).join(" ")}` : "-A";
 
   const written = await host.sh(
@@ -175,8 +153,7 @@ async function clonedSource(
 
   detail(`checking out ${release.slice(0, 7)}`);
   await run(host, `checking out ${release.slice(0, 7)}`, [
-    // The checkout shares the mirror's object store, so it costs the working
-    // tree and nothing else. Reused between deploys, hence the reset and clean
+    // Shares the mirror's object store and is reused, hence the reset and clean
     `if [ ! -d '${path}/.git' ]; then`,
     `  rm -rf '${path}'`,
     `  mkdir -p '${host.cache}/source'`,
@@ -184,14 +161,12 @@ async function clonedSource(
     "fi",
     `git -C '${path}' fetch --prune origin`,
     `git -C '${path}' checkout --detach --force '${release}'`,
-    // Leaves the submodules alone: they are tracked, and clean only removes
-    // what is not
+    // Leaves the submodules alone: clean only removes what is not tracked
     `git -C '${path}' clean -ffdx`,
   ], request.output);
 
   if (request.submodules) {
-    // --remote follows the branch named in .gitmodules rather than the commit
-    // the parent recorded, which is what the pipeline has always done
+    // --remote follows .gitmodules' branch rather than the commit the parent recorded
     detail("updating submodules");
     await run(host, "updating submodules", [
       `git -C '${path}' submodule sync --recursive`,

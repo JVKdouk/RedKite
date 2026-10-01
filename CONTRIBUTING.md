@@ -5,10 +5,11 @@
 ```sh
 npm install
 npm run build              # dist, what actually ships
-npm test                   # 268 assertions, no host required
+npm test                   # 534 assertions, no host required
 npm run check              # tsc --noEmit, including the type-level assertions
 npm run bench              # re-executed instructions, round trips, health wall clock
 npm run plan               # against the bundled example config
+npm run coverage           # the same suite, with what it never reached
 ```
 
 Run `npm run check && npm test` before opening a pull request. `prepublishOnly`
@@ -17,8 +18,28 @@ failing test or an unfilled licence.
 
 ## Releasing
 
-`prepublishOnly` runs `check`, `test` and `scripts/verifyRelease.mjs`, so a
-publish cannot go out with a failing test or an unfilled licence.
+A release is a tag. Pushing `v<version>` is the whole trigger:
+`.github/workflows/release.yml` publishes that tag to npm and moves the major
+tag afterwards, so nothing is published from a laptop and every release carries
+provenance back to the commit it was built from.
+
+1. `npm version <patch|minor|major>`, which writes `package.json` and commits it
+2. Point `action.yml`'s `version` default at the new number. `verifyRelease`
+   fails the publish if you forget, because an action left behind keeps working
+   and keeps running the release before last
+3. Move the unreleased entries in `CHANGELOG.md` under the new heading
+4. Commit, then `git tag v<version> && git push origin master v<version>`
+
+The workflow runs `check`, `test` and `verifyRelease` before it publishes, and
+`prepublishOnly` runs the same three again on the publish itself, so the gate
+holds whether the release goes out from CI or by hand.
+
+**The major tag is what the action is used by.** `README.md` and
+`examples/actions` say `JVKdouk/redkite@v0`, so `v0` has to end up on the
+release commit or every documented workflow installs something else. The release
+workflow moves it with `--force` as its last step. While the version is `0.x`
+this is `v0`, and a `1.0.0` is the point where it becomes `v1` and the refs in
+those three places change with it.
 
 ## Layout
 
@@ -27,7 +48,6 @@ publish cannot go out with a failing test or an unfilled licence.
 | `types.ts` | The config surface, every field commented |
 | `config.ts` | `defineDeployment`, duplicate name and route validation |
 | `topology.ts` | Every name and address, derived from the app list |
-| `nginx.ts` | Renders upstreams and locations, uniform header policy |
 | `pipeline.ts` | The points, what a step is handed, the runner |
 | `host.ts` | The one port: a shell command, and a file written |
 | `sshHost.ts` / `localHost.ts` | The two implementations of it |
@@ -38,6 +58,7 @@ publish cannot go out with a failing test or an unfilled licence.
 | `deploy.ts` | The four steps redkite puts in the pipeline |
 | `steps.ts` | Steps a config hangs around them, and the network they run on |
 | `services/index.ts` | `redis`, `postgres`, and the specs they answer with |
+| `services/proxy.ts` | The derived proxy: its spec, and the nginx it runs |
 | `services/ensure.ts` | One primitive for every service and for nginx |
 | `services/planned.ts` | What should be running, its fingerprint, and drift |
 | `secrets/` | `bitwarden(id)` refs, merge order, the CLI as a process |
@@ -57,9 +78,10 @@ the only two files a test cannot cover offline.
 
 `test/topology.test.ts` writes out every name and address a deployment runs on
 and asserts the derivation still answers with them, because two of them
-colliding is a deploy that takes an app down. `test/nginx.test.ts` diffs the
-rendered configuration against a file a person can read as nginx, so a change to
-the renderer has to be looked at rather than merely re-recorded.
+colliding is a deploy that takes an app down. `test/proxy.test.ts` diffs the
+rendered configuration against `test/fixtures/nginx.today.conf`, a file a person
+can read as nginx, so a change to the renderer has to be looked at rather than
+merely re-recorded.
 
 `test/deploy.test.ts` runs the whole orchestration against a fake host that
 records every command, and asserts the swap happens in the only order that keeps

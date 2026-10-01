@@ -54,17 +54,14 @@ describe("pipeline cost", () => {
     const { host } = await fullDeploy();
     const inspects = host.commands.filter((command) => command.includes("docker inspect"));
 
-    // Every guard used to be its own round trip, and a round trip is a
-    // connection to another machine
+    // Every guard used to be its own round trip to another machine
     assert.deepEqual(inspects, []);
   });
 
   it("stays under a round trip budget for a two app deployment", async () => {
     const { host } = await fullDeploy();
 
-    // Was 62 before the snapshot, and the transfer it used to pay for is gone
-    // entirely. Left as a ceiling so a genuine new step is not a failure, but a
-    // regression to per object polling is
+    // A ceiling, so a new step is allowed but per-object polling is not
     assert.ok(
       host.commands.length <= 40,
       `${host.commands.length} host commands, budget is 40`,
@@ -74,8 +71,7 @@ describe("pipeline cost", () => {
   it("never moves an image between machines", async () => {
     const { host } = await fullDeploy();
 
-    // The image is created in the daemon that runs it, so the export, the
-    // tarball and the transfer all stop existing
+    // Created in the daemon that runs it, so the export and transfer go away
     assert.deepEqual(
       host.commands.filter((command) => /^(load|save|push|pull) /.test(command)),
       [],
@@ -86,8 +82,7 @@ describe("pipeline cost", () => {
     const host = await traceBuild();
     const context = host.commands.find((command) => command.startsWith("build "))!;
 
-    // Cloned into a mirror that survives the deploy, so the next one fetches
-    // only what is new rather than the repository again
+    // A mirror survives the deploy, so the next fetches only what is new
     assert.ok(host.commands.some((c) => c.includes(`git clone --mirror`)));
     assert.ok(host.commands.some((c) => c.includes(`remote update --prune`)));
     assert.match(context, new RegExp(`${host.host.cache}/source/${back.container}$`));
@@ -126,8 +121,7 @@ describe("work not done twice", () => {
 
     assert.equal(result.ok, true);
 
-    // Only the services are built, because their containers do not exist in
-    // this scenario. Neither app is
+    // Only the services are built here; neither app is
     const apps = host.commands.filter(
       (command) =>
         command.startsWith("build ") &&
@@ -145,15 +139,13 @@ describe("work not done twice", () => {
     assert.ok(builds.some((command) => command.includes(`-t ${front.container}:abc1234`)));
   });
 
-  // A build leaves its image on the host rather than sending one, so without
-  // this every deploy adds a runtime image and a builder to a disk nobody reads
+  // Without this every deploy adds a runtime image and a builder to the disk
   it("reclaims the versions it replaced", async () => {
     const host = fakeHost({ existing: [front.container, back.container] });
 
     host.images.add(`${back.container}:stale-fingerprint`);
     host.images.add(`${back.container}-builder:stale-fingerprint`);
-    // What the deploy before this one left behind: the versions, and the moving
-    // name it created the containers from
+    // What the deploy before left behind, including the name it created from
     host.images.add(back.container);
     host.respond(front.container, '{"status":"ok"}');
     host.respond(back.container, '{"status":"up","redis":"up","database":"up"}');
@@ -171,17 +163,14 @@ describe("work not done twice", () => {
       host.commands.includes(`image remove -f ${back.container}-builder:stale-fingerprint`),
     );
 
-    // Never the moving name a container is created from, under either spelling.
-    // Reclaiming it leaves a host that cannot start the app it just released
+    // Reclaiming the moving name leaves a host that cannot start the app
     const removed = host.commands.filter((c) => c.startsWith("image remove"));
     for (const name of [back.container, `${back.container}:latest`]) {
       assert.ok(!removed.includes(`image remove -f ${name}`), `${name} was reclaimed`);
     }
   });
 
-  // The build used to overlap the network and the services, which cost nothing
-  // while nothing else could observe them. A setup step can, so setup finishes
-  // first and the overlap is the price of a host a step can rely on
+  // Setup goes first, the price of a host a step can rely on
   it("has the network and every service up before a build starts", async () => {
     const order: string[] = [];
     const host = fakeHost();

@@ -5,9 +5,7 @@ import { silent, type Log } from "./log.js";
 import { topologyFor, type Topology } from "./topology.js";
 import type { Deployment } from "./types.js";
 
-// Undoing a run that did not finish, from a process that is not it. A cancelled
-// job is killed rather than asked, so nothing it was holding survives to tidy
-// up: what the host is left in has to be readable from the host alone.
+// Undoing an unfinished run from elsewhere, reading only what the host holds
 
 export type RecoverOptions = {
   config: Deployment;
@@ -23,9 +21,7 @@ export type RolledBack = {
   untouched: string[];
 };
 
-// A retired container is the whole signal. One exists between the swap and the
-// cleanup that removes it, so finding one means a run moved an address and did
-// not get to say whether that worked
+// One exists only between the swap and the cleanup, so it means a moved address
 export async function rollback(options: RecoverOptions): Promise<RolledBack> {
   const { log, topology, docker } = opened(options);
 
@@ -50,9 +46,7 @@ export type TakenDown = {
   stopped: string[];
 };
 
-// Stopped rather than removed, so the next run adopts them where it left off.
-// For an environment that exists to be built against rather than served from,
-// which is the one a cancelled job should not leave running
+// Stopped rather than removed, so the next run adopts them where it left off
 export async function down(options: RecoverOptions): Promise<TakenDown> {
   const { log, topology, docker } = opened(options);
   const stopped: string[] = [];
@@ -68,9 +62,7 @@ export async function down(options: RecoverOptions): Promise<TakenDown> {
   return { stopped };
 }
 
-// Everything this environment named, whether or not it was ever created. The
-// proxy is derived rather than listed, so it would be missed by walking the
-// config alone
+// Includes the derived proxy, which walking the config alone would miss
 function every(topology: Topology) {
   return [
     ...topology.apps.flatMap((app) => [app.container, app.retired, app.failed]),
@@ -79,8 +71,7 @@ function every(topology: Topology) {
   ];
 }
 
-// Both of these exist because something was stopped, so neither may be refused
-// by that same stop
+// Both exist because something was stopped, so neither may be refused by it
 function opened(options: RecoverOptions) {
   return {
     log: options.log ?? silent,

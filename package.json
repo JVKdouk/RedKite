@@ -42,12 +42,14 @@
     "bin",
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "rm -rf dist && tsc --project tsconfig.build.json",
     "check": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
+    "coverage": "tsx --test --experimental-test-coverage --test-coverage-exclude='test/**' --test-coverage-exclude='bench/**' --test-coverage-exclude='examples/**' --test-coverage-exclude='/tmp/**' test/*.test.ts",
     "bench": "tsx bench/index.ts",
     "plan": "node bin/redkite.mjs plan --config examples/acme/redkite.config.ts",
     "prepare": "npm run build",

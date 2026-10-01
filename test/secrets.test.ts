@@ -44,15 +44,14 @@ describe("secret refs", () => {
   it("merges an array in the order written, later winning", async () => {
     const merged = await readEnv([bitwarden.item("shared"), bitwarden.item("app")], stores);
 
-    // Every dotenv parser builds an object as it reads, so the last LOG_LEVEL
-    // is the one the app sees
+    // A parser builds as it reads, so the later value is what the app sees
     assert.equal(merged, "LOG_LEVEL=info\nREGION=eu\nLOG_LEVEL=debug\n");
   });
 
   it("separates entries that did not end in a newline", async () => {
     const merged = await readEnv([bitwarden.item("no-newline"), bitwarden.item("app")], stores);
 
-    // Without this the last key of one file and the first of the next join
+    // Without this two files' keys would run together
     assert.equal(merged, "A=1\nLOG_LEVEL=debug\n");
   });
 
@@ -68,8 +67,7 @@ describe("secret refs", () => {
     );
   });
 
-  // The id is a pointer rather than a credential, and the provider tag on it is
-  // the whole of how a deploy knows which store to open
+  // The id is a pointer, and the provider is how a deploy picks the store
   it("carries every ref a deployment declares, with its provider", () => {
     const backend = withEnvironment(config, "production").apps.find(
       (app) => app.name === "backend",
@@ -83,14 +81,13 @@ describe("secret refs", () => {
       assert.ok(ref.id.length > 0);
     }
 
-    // Each names a different item, or one of them is silently unreachable
+    // Each names a different item, or one is silently unused
     assert.equal(new Set(refs.map((ref) => ref.id)).size, refs.length);
   });
 });
 
 
-// The CLI is resolved once and then called directly. npx resolved the package
-// again on every invocation, and unlocking is three commands plus one per secret
+// Resolved once: npx would resolve again on each of several calls
 describe("reaching the Bitwarden CLI", () => {
   const calls = join(tmpdir(), `redkite-bw-calls-${process.pid}`);
 
@@ -122,10 +119,7 @@ describe("reaching the Bitwarden CLI", () => {
   });
 });
 
-// Bitwarden is two services. Secrets Manager opens with an access token and is
-// what a deploy wants; the password manager wants a session or a master
-// password. Handing one service's credential to the other is how a deploy ends
-// up waiting on a prompt nobody can see.
+// Two services, two credentials, and crossing them waits on an unseen prompt
 describe("which Bitwarden a deployment reads", () => {
   const calls = join(tmpdir(), `redkite-bw-which-${process.pid}`);
   const managerCalls = join(tmpdir(), `redkite-bws-which-${process.pid}`);
@@ -165,8 +159,7 @@ describe("which Bitwarden a deployment reads", () => {
     assert.ok(!existsSync(calls), "and the password manager is never reached for");
   });
 
-  // The one that was hanging: a Secrets Manager token given to the password
-  // manager, which decided the vault was locked and asked for a password
+  // The hang: a Secrets Manager token given to the password manager
   it("says what is wrong rather than reaching for the wrong service", async () => {
     await pointAt();
     delete process.env["BW_KEY"];

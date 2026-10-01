@@ -5,18 +5,13 @@ import type { SecretStores } from "./secrets/refs.js";
 import type { Topology } from "./topology.js";
 import type { Deployment } from "./types.js";
 
-// Capistrano's shape: work addressed by where it runs rather than by who calls
-// it, so a plugin or a config adds a step without any file here knowing it
-// exists. A run is a list of steps, each handed what the one before it answered
-// with. Redkite's own four are ordinary members of that list.
+// Work addressed by where it runs, each step handed what the one before answered
 
-// Every phase redkite supplies a step for. Each is also the name of the point
-// that step sits at. No run walks all of them: swap and verify are alternatives
+// Each is also the name of the point its step sits at. No run walks all of them
 export const PHASES = ["setup", "build", "verify", "swap", "cleanup"] as const;
 export type Phase = (typeof PHASES)[number];
 
-// The phases each command walks, in the order it walks them. A phase left out
-// is not run, and a step hung on one of its slots never fires
+// A phase left out is not run, and a step hung on its slots never fires
 export const RUNS = {
   deploy: ["setup", "build", "swap", "cleanup"],
   verify: ["setup", "build", "verify", "cleanup"],
@@ -24,22 +19,17 @@ export const RUNS = {
 
 export type Run = keyof typeof RUNS;
 
-// Everything before the phase's own step, the phase's own slot, everything after
+// Everything before the phase's step, its own slot, then everything after
 export const SLOTS = ["before", "main", "after"] as const;
 export type Slot = (typeof SLOTS)[number];
 
-// Where a step runs. The bare phase is the point redkite's own step sits at, and a
-// deployment that puts its own step there replaces it: nothing about redkite's
-// four makes them harder to displace than any other step
+// The bare phase is where redkite's own step sits, and a step there replaces it
 export type Point = Phase | `${Phase}:${string}`;
 
-// Every point but the four redkite's own steps sit at. A hook is handed and
-// answers with one value, which is what lets a helper be written over all of
-// them at once
+// Every point but redkite's four; a hook takes and answers with one value
 export type Hook = Exclude<Point, Phase>;
 
-// What a run has done so far. Each phase adds to what it was handed rather than
-// replacing it, so a step late in the pipeline reads everything above it
+// Each phase adds to what it was handed, so a late step reads everything above
 
 export type Start = {
   environment: string;
@@ -47,7 +37,7 @@ export type Start = {
 
 export type Prepared = Start & {
   network: string;
-  // Every service's container, whether this run created it or adopted one
+  // Every service's container, created by this run or adopted
   services: string[];
 };
 
@@ -58,8 +48,7 @@ export type BuiltApp = {
   fingerprint: string;
   // The host already held this image, and nothing was rebuilt
   cached: boolean;
-  // The image a step hung before the swap runs in, holding the app's own
-  // toolchain rather than only what it compiled to
+  // Holds the app's own toolchain, not only what it compiled to
   builderTag: string;
 };
 
@@ -68,13 +57,11 @@ export type Built = Prepared & {
 };
 
 export type Released = Built & {
-  // False when an app failed its health check and every app was put back, or
-  // when a check the verify step ran said the build does not work
+  // False when health put every app back, or a verify check failed
   ok: boolean;
   released: string[];
   reverted: string[];
-  // Apps whose checks ran. A deploy runs none, so only a verify fills this,
-  // and the two runs answer with one shape so a step after either reads it
+  // Only a verify fills this, but both runs answer with one shape
   checked: string[];
 };
 
@@ -83,26 +70,22 @@ export type Finished = Released & {
   reclaimed: string[];
 };
 
-// Everything a step is given besides the value: what is being deployed, and the
-// machine it is being deployed to
+// What a step gets besides the value: the config, and the host
 export type Context = {
   config: Deployment;
   environment: string;
-  // Which run this is. A step that behaves differently in one is rare, but the
-  // service set does: nothing serves in a verify, so it has no proxy
+  // The service set differs: nothing serves in a verify, so it has no proxy
   run: Run;
   topology: Topology;
   host: Host;
   docker: Docker;
   secrets: SecretStores;
   log: Log;
-  // The progress row this step already has. A step says what it is doing
-  // through this rather than opening a second one beside it
+  // The row this step already has, rather than a second one beside it
   task: Task;
 };
 
-// What a phase's step is handed, and what it answers with. The two together are
-// the only reason a step can be typed by where it runs
+// Together these are what lets a step be typed by where it runs
 type PhaseInput = {
   setup: Start;
   build: Prepared;
@@ -125,9 +108,7 @@ type PhaseOf<P extends Point> = P extends Phase
     ? F
     : never;
 
-// A phase's own step is what moves a run from one value to the next. Everything
-// hung around it is handed what that side of it produced, so a step is typed by
-// where it runs and never has to say what it takes
+// Everything hung around a phase's step is handed what that side produced
 export type InputAt<P extends Point> = P extends Phase
   ? PhaseInput[P]
   : P extends `${string}:before:${string}`
@@ -140,34 +121,28 @@ export type OutputAt<P extends Point> = P extends Phase
     ? PhaseInput[PhaseOf<P>]
     : PhaseOutput[PhaseOf<P>];
 
-// What a step can know before a run starts: nothing has happened yet, so this
-// is the config as written and the environment it was asked for
+// Before a run starts: the config as written and the environment asked for
 export type Plan = {
   config: Deployment;
   environment: string;
 };
 
-// A property rather than a method, because a method's parameter is checked
-// bivariantly: declared as one, a step could narrow its input to a value the
-// slot it runs in has not produced yet
+// A property, since a method's parameter is bivariant and could narrow its input
 export type Step<P extends Point = Point> = {
   point: P;
-  // Run before the first step, so a step that cannot possibly work says so
-  // while the host is still untouched rather than half way through a swap
+  // Run before the first step, while the host is still untouched
   check?: (plan: Plan) => void;
   run: (input: InputAt<P>, context: Context) => OutputAt<P> | Promise<OutputAt<P>>;
 };
 
-// Erased for storage. A list assembled from a config cannot carry each step's
-// own input type, and `never` is what every one of them accepts
+// Erased for storage: `never` is what every step's input accepts
 export type AnyStep = {
   point: Point;
   check?: (plan: Plan) => void;
   run: (input: never, context: Context) => unknown;
 };
 
-// Identity, but it pins the point so a typo fails to compile and the input is
-// inferred from where the step runs rather than annotated
+// Pins the point, so a typo fails to compile and the input is inferred
 export function defineStep<const P extends Point>(
   point: P,
   run: Step<P>["run"],
@@ -176,9 +151,7 @@ export function defineStep<const P extends Point>(
   return { point, run, check };
 }
 
-// A step at the same point as one redkite supplies replaces it, in the place redkite
-// had it. That is the whole of turning one of redkite's four off: put something
-// there that does less, or nothing
+// A step at redkite's own point replaces it there, which is how one is turned off
 export function merge(supplied: AnyStep[], added: AnyStep[]): AnyStep[] {
   const overrides = new Map(added.map((step) => [step.point, step]));
   const claimed = new Set(supplied.map((step) => step.point));
@@ -189,8 +162,7 @@ export function merge(supplied: AnyStep[], added: AnyStep[]): AnyStep[] {
   ];
 }
 
-// Stopping between steps, rather than in the middle of one. A step is the unit
-// that leaves the host in a state the next deploy can read
+// Stops between steps, the unit that leaves a state the next deploy can read
 export class Aborted extends Error {
   constructor(point: string) {
     super(`Stopped before ${point}`);
@@ -207,18 +179,13 @@ export async function runPipeline(
   const ordered = sequence(steps, RUNS[run]);
   const plan: Plan = { config: setting.config, environment: setting.environment };
 
-  // What the run will walk, said before any of it does. Nothing depends on it
-  // being heard: a log without a view has nothing to do with the list
+  // Said before any of it runs; nothing depends on it being heard
   setting.log.plan?.(ordered.map((step) => step.point));
 
-  // Every check before any step, so a run that is going to fail on a config
-  // mistake fails before it has created a network or built an image. Nothing
-  // wraps what a check throws: it is about the config, and the config is what
-  // the reader has in front of them
+  // Every check before any step, so a config mistake creates nothing first
   for (const step of ordered) step.check?.(plan);
 
-  // Every step is handed what the one before it answered with, so the whole run
-  // is a fold over one list. Running part of it at once is a change here alone
+  // The whole run is a fold over one list
   let value: unknown = { environment: setting.environment } satisfies Start;
 
   for (const step of ordered) {
@@ -226,30 +193,24 @@ export async function runPipeline(
 
     const task = setting.log.step(step.point);
 
-    // A step declares what it takes and answers with through its point, and a
-    // list assembled from a config cannot carry that through. The declared
-    // types are the contract, and this is the one place they are taken on trust
+    // The declared types are the contract, and this is where they are trusted
     const run = step.run as (input: unknown, context: Context) => unknown;
 
     try {
       value = await run(value, { ...setting, task });
       task.done();
     } catch (error) {
-      // One step throwing ends the run. Everything after it was written
-      // assuming the steps before did what they said they would
+      // One step throwing ends the run; everything after assumed it worked
       task.fail(`${step.point} failed`);
       throw new Error(`Step ${step.point} failed`, { cause: error });
     }
   }
 
-  // Every run ends at cleanup, and a step there answers with a Finished or does
-  // not compile
+  // Every run ends at cleanup, whose step answers with a Finished or will not compile
   return value as Finished;
 }
 
-// The order a run walks: for each of its phases, everything before it, the
-// phase's own slot, then everything after. Redkite's own step leads its slot
-// because merge keeps the supplied list first
+// Redkite's own step leads its slot, because merge keeps the supplied list first
 export function sequence(
   steps: AnyStep[],
   phases: readonly Phase[] = RUNS.deploy,
@@ -272,8 +233,7 @@ function runsAt(step: AnyStep, phase: Phase, slot: Slot) {
 
 export type Address = { phase: Phase; slot: Slot; name: string };
 
-// The names everything else in redkite derives, so a step reads like the container
-// and cache keys beside it
+// The names everything else derives, so a step reads like the keys beside it
 const NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 // Points a config may still be written against, and what they became
@@ -292,8 +252,7 @@ export function addressOf(point: string): Address {
     throw new Error(`${point} names no phase, expected one of ${PHASES.join(", ")}`);
   }
 
-  // The point redkite's own step sits at, and the one a deployment claims to
-  // replace it
+  // The point redkite's own step sits at, and the one a deployment replaces
   if (parts.length === 1) return { phase, slot: "main", name: phase };
 
   if (parts.length === 2) return { phase, slot: "main", name: named(point, parts[1]) };
@@ -312,9 +271,7 @@ export function addressOf(point: string): Address {
   return { phase, slot, name: named(point, parts[2]) };
 }
 
-// Checked where the config is defined rather than where it runs, so a typo or a
-// collision is a config that fails to load rather than a deploy that stops half
-// way through with the host already changed
+// Checked where the config is defined, so a typo fails to load
 export function assertSteps(steps: AnyStep[]) {
   const seen = new Set<string>();
 

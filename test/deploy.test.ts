@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import config from "./deployment.js";
-import type { Deployment, Log } from "../src/index.js";
+import type { Deployment, Log, Task } from "../src/index.js";
 import {
   bitwarden,
   deploy,
-  tag,
   fingerprintOf,
   migrate,
   plannedServices,
@@ -33,8 +32,7 @@ const secrets = {
   },
 };
 
-// What the deployment would create each service from, so a test can say the
-// running one matches it or was made from something else
+// What each service would be created from, so a test can say whether one matches
 function fingerprints() {
   const entries = plannedServices(config, topology).map(
     (item) => [item.service.container, fingerprintOf(item, topology)] as const,
@@ -65,8 +63,7 @@ async function run(options: {
   return { result, host };
 }
 
-// A config mistake has to be found before the run starts, so what is asserted
-// is the message and that the host is still untouched
+// Asserts the message, and that the host is still untouched
 async function refuses(broken: Deployment, message: RegExp) {
   const host = fakeHost();
 
@@ -104,8 +101,7 @@ describe("deploy", () => {
 
   it("swaps in the only order that keeps a container answering", async () => {
     const { host } = await run({ existing: [back.container] });
-    // Only commands where the backend is the subject, not ones that merely
-    // name it in an --add-host
+    // Only commands where the backend is the subject, not an --add-host mention
     const steps = host.commands.filter(
       (command) =>
         command === `network connect --ip ${back.retiredAddress} ${topology.network} ${back.container}` ||
@@ -118,7 +114,7 @@ describe("deploy", () => {
       // The old container moves aside without stopping, still serving
       `network connect --ip ${back.retiredAddress} ${topology.network} ${back.container}`,
       `container rename ${back.container} ${back.retired}`,
-      // Only then does the name and the live address belong to the new one
+      // Only then do the name and the live address belong to the new one
       `container create --name ${back.container} --hostname ${back.container} -v ${back.volumes[0]!.volume}:/app/logs --network ${topology.network} --add-host ${front.container}:${front.currentAddress} --add-host ${front.retired}:${front.retiredAddress} --add-host redis:${topology.services[0]!.address} --env-file /tmp/redkite/apps/backend/env -e PM2_HOME=/app/logs/pm2 --ip ${back.currentAddress} --restart unless-stopped ${back.container}`,
       `container start ${back.container}`,
     ]);
@@ -134,8 +130,7 @@ describe("deploy", () => {
     assert.ok(migrated < firstRetire, "and it ran while the old containers still served");
   });
 
-  // The step runs on the deploy host, so it reaches the database the same way
-  // that machine does
+  // Runs on the deploy host, so it reaches whatever that machine reaches
   it("runs the migration in the builder image, on the host's own network", async () => {
     const { host } = await run({ existing: [back.container] });
     const migration = host.commands.find((c) => c.includes("yarn db:migrate"))!;
@@ -144,8 +139,7 @@ describe("deploy", () => {
     assert.match(migration, new RegExp(`${back.container}-builder:`));
   });
 
-  // Nothing from the vault is in the image any more, so a migration that was
-  // not handed one would run with no database url at all
+  // Nothing from the vault is in the image, so an unhanded migration has no url
   it("hands the migration the environment the image no longer carries", async () => {
     const { host } = await run({ existing: [back.container] });
     const migration = host.commands.find((c) => c.includes("yarn db:migrate"))!;
@@ -156,8 +150,7 @@ describe("deploy", () => {
     assert.equal(written, "DATABASE_URL=postgres://user:pw@db.internal:5432/app\n");
   });
 
-  // A database this deployment runs is on the deployment network under an
-  // alias, and a migration on the host's own stack cannot resolve it
+  // A database of this deployment is on its network, unreachable from the host
   it("puts a migration on the deployment network when it is asked to", async () => {
     const onNetwork: Deployment = {
       ...config,
@@ -185,8 +178,7 @@ describe("deploy", () => {
     assert.ok(!migration.includes("--network host"));
   });
 
-  // A verify environment names no port, and asking one to deploy would create
-  // a proxy nobody outside can reach. Refused before anything is built
+  // Refused before anything is built, since the proxy would be unreachable
   it("refuses to deploy an environment that publishes nothing", async () => {
     const unpublished: Deployment = {
       ...config,
@@ -201,8 +193,7 @@ describe("deploy", () => {
     assert.deepEqual(host.commands, [], "and the host is untouched");
   });
 
-  // A step in an environment file is at an ordinary point, so it replaces the
-  // deployment's there. Only the command the host was given can show which ran
+  // It replaces the deployment's there, which only the command can show
   it("runs the environment's migration in place of the deployment's", async () => {
     const environments = config.environments ?? {};
     const host = fakeHost({ existing: [back.container] });
@@ -227,8 +218,7 @@ describe("deploy", () => {
     assert.match(migrations[0]!, /yarn db:migrate:staging$/);
   });
 
-  // The file the container is created from is what the running process sees,
-  // so this is where another environment's item would do its damage
+  // The env file is what the process reads, so this is where a wrong item shows
   it("hands the container the environment's own item, and never another's", async () => {
     const environments = config.environments ?? {};
     const host = fakeHost({ existing: [back.container] });
@@ -261,8 +251,7 @@ describe("deploy", () => {
     assert.doesNotMatch(written, /production/);
   });
 
-  // Nothing in a config says an app needs a builder. Every app keeps one, so a
-  // step can be hung anywhere without a second place having to agree
+  // Every app keeps one, so a step can be hung anywhere without agreement
   it("keeps a builder for every app", async () => {
     const { host } = await run();
     const built = host.commands.filter((command: string) =>
@@ -284,9 +273,7 @@ describe("deploy", () => {
     await refuses(missing, /ghost names no app/);
   });
 
-  // A first deploy has nothing behind it. Reverting used to reach for a
-  // container that never existed and fail with "it does not exist", which
-  // turned an unhealthy first release into a crash with no verdict
+  // A first deploy has nothing behind it, and reverting used to fail on that
   it("reverts a first deploy that never came up, without a container to put back", async () => {
     const { result, host } = await run({
       bodies: { ...HEALTHY, [back.container]: '{"status":"down"}' },
@@ -295,8 +282,7 @@ describe("deploy", () => {
     assert.equal(result.ok, false);
     assert.deepEqual(result.reverted.sort(), [back.container, front.container].sort());
 
-    // Parked under its own name. The swap starts it once to probe it, and the
-    // revert must not reach for it again once the name has moved
+    // Parked under its own name, and not reached for again once the name moved
     assert.ok(host.commands.includes(`container rename ${back.container} ${back.failed}`));
 
     const started = host.commands.filter((c) => c === `container start ${back.container}`);
@@ -313,8 +299,7 @@ describe("deploy", () => {
     assert.deepEqual(result.released, []);
     assert.deepEqual(result.reverted.sort(), [back.container, front.container].sort());
 
-    // The healthy app is put back too, a half-swapped deployment is the one
-    // state nothing downstream can reason about
+    // The healthy app goes back too: a half-swapped deployment is unreasonable
     for (const app of [front, back]) {
       assert.ok(host.commands.includes(`container rename ${app.container} ${app.failed}`));
       assert.ok(host.commands.includes(`container rename ${app.retired} ${app.container}`));
@@ -336,8 +321,7 @@ describe("deploy", () => {
   it("does not try to remove a failed container that never existed", async () => {
     const { host } = await run({ existing: [back.container] });
 
-    // Cleanup checks before it removes, so a first deploy is not full of
-    // errors about objects that were never created
+    // Cleanup checks before removing, so a first deploy reports no phantom errors
     assert.ok(!host.commands.includes(`container rm ${back.failed}`));
   });
 
@@ -351,7 +335,7 @@ describe("deploy", () => {
       (command) => command === `container rm ${front.retired}`,
     );
 
-    // The retired container is now the live one, removing it would end the deploy
+    // The retired container is now the live one
     assert.equal(removedLive.length, 0);
   });
 
@@ -369,9 +353,7 @@ describe("deploy", () => {
     assert.deepEqual(created, []);
   });
 
-  // A service is adopted because it is the one the deployment describes, not
-  // because something with the right name is there. A rendered config or a
-  // published port only reaches a container that is created
+  // Adopted for being the one described, not for having the right name
   it("recreates a service that was created from something else", async () => {
     const proxy = topology.router;
     const stale = { ...fingerprints(), [proxy.container]: "0000000000000000" };
@@ -383,8 +365,7 @@ describe("deploy", () => {
     assert.ok(host.commands.some((c) => c.includes(`--name ${proxy.container}`)));
   });
 
-  // One created by hand, or before redkite recorded what it created from. It
-  // cannot be said to match, so it is rebuilt once rather than trusted forever
+  // One redkite cannot place is rebuilt once rather than trusted
   it("recreates a service it does not recognise", async () => {
     const redis = topology.services.find((service) => service.name === "redis")!;
     const { host } = await run({ existing: [redis.container] });
@@ -392,7 +373,7 @@ describe("deploy", () => {
     assert.ok(host.commands.some((c) => c.includes(`--name ${redis.container}`)));
   });
 
-  // The whole point: changing what nginx publishes has to reach the container
+  // Changing what nginx publishes has to reach the container
   it("recreates the proxy when the published port changes", async () => {
     const moved = {
       ...config,
@@ -411,8 +392,7 @@ describe("deploy", () => {
     assert.notEqual(before, after);
   });
 
-  // The proxy is derived from the app list rather than listed beside redis,
-  // so a deployment cannot be written that routes to apps without one
+  // Derived from the app list, so routes without a proxy cannot be written
   it("publishes only the derived proxy, with every host it must resolve", async () => {
     const { host } = await run();
     const creates = host.commands.filter((c) => c.startsWith("container create"));
@@ -448,8 +428,7 @@ describe("deploy", () => {
   });
 });
 
-// A service the image will not start without credentials for, so the config
-// carries a pointer and the deploy resolves it
+// The config carries a pointer and the deploy resolves it
 describe("a service with secrets", () => {
   const withPostgres: Deployment = {
     ...config,
@@ -499,42 +478,47 @@ describe("a service with secrets", () => {
   });
 });
 
-// Every step and everything said under it, in order, so a test can say what a
-// person watching would have seen
+// In order, so a test can say what the person watching would have seen
 function recorded() {
   const events: string[] = [];
+  // Which step each was opened inside
+  const parents = new Map<string, string | undefined>();
+
   const say = (event: string) => {
     events.push(event);
+  };
+
+  const open = (label: string, parent?: string): Task => {
+    say(`step ${label}`);
+    parents.set(label, parent);
+
+    return {
+      detail: (message: string) => say(`${label} · ${message}`),
+      line: (message: string) => say(`${label} | ${message}`),
+      done: (message?: string) => say(`${label} done ${message ?? ""}`),
+      fail: (message: string) => say(`${label} failed ${message}`),
+      step: (child: string) => open(child, label),
+    };
   };
 
   const log = Object.assign((message: string) => say(`info ${message}`), {
     warn: (message: string) => say(`warn ${message}`),
     fail: (message: string) => say(`fail ${message}`),
     done: (message: string) => say(`done ${message}`),
-    step: (label: string) => {
-      say(`step ${label}`);
-
-      return {
-        detail: (message: string) => say(`${label} · ${message}`),
-        line: (message: string) => say(`${label} | ${message}`),
-        done: (message?: string) => say(`${label} done ${message ?? ""}`),
-        fail: (message: string) => say(`${label} failed ${message}`),
-      };
-    },
+    step: (label: string) => open(label),
   }) satisfies Log;
 
-  return { log, events };
+  return { log, events, parents };
 }
 
-// A clone is where a wrong branch or an unreachable repository shows. Folded
-// into the build, it scrolled past without saying what it fetched
+// Folded into the build it scrolled past without saying what it fetched
 describe("cloning each app", () => {
   async function deployWith(options: { config?: Deployment; refuse?: string } = {}) {
     const host = fakeHost({ existing: [back.container] });
     for (const [container, body] of Object.entries(HEALTHY)) host.respond(container, body);
     if (options.refuse) host.refuse(options.refuse);
 
-    const { log, events } = recorded();
+    const { log, events, parents } = recorded();
 
     try {
       await deploy({
@@ -546,9 +530,9 @@ describe("cloning each app", () => {
         health: { sleep: async () => {} },
       });
 
-      return { events, host, error: undefined };
+      return { events, parents, host, error: undefined };
     } catch (error) {
-      return { events, host, error };
+      return { events, parents, host, error };
     }
   }
 
@@ -569,11 +553,20 @@ describe("cloning each app", () => {
     }
   });
 
+  it("clones and builds inside the build step, where the view draws them", async () => {
+    const { parents } = await deployWith();
+
+    for (const name of ["frontend", "backend"]) {
+      assert.equal(parents.get(`Cloning ${name}`), "build");
+      assert.equal(parents.get(`Building ${name}`), "build");
+    }
+  });
+
   it("says which repository and which branch it is cloning, as it starts", async () => {
     const { events } = await deployWith();
 
     assert.ok(
-      events.includes(`Cloning backend · ${tag("GH")} acme/backend staging`),
+      events.includes("Cloning backend · acme/backend staging"),
       events.filter((event) => event.startsWith("Cloning backend")).join("\n"),
     );
   });
@@ -582,14 +575,14 @@ describe("cloning each app", () => {
     const { events } = await deployWith();
 
     assert.ok(
-      events.includes(`Cloning backend done ${tag("GH")} acme/backend staging -> abc1234`),
+      events.includes("Cloning backend done acme/backend staging -> abc1234"),
     );
   });
 
   it("names a pinned tag rather than the environment's branch", async () => {
     const { events } = await deployWith({ config: withBackend((app) => ({ ...app, tag: "v1.2.3" })) });
 
-    assert.ok(events.includes(`Cloning backend · ${tag("GH")} acme/backend tag v1.2.3`));
+    assert.ok(events.includes("Cloning backend · acme/backend tag v1.2.3"));
   });
 
   it("fails the clone, not the build, when the repository cannot be fetched", async () => {
@@ -599,7 +592,7 @@ describe("cloning each app", () => {
 
     assert.ok(error, "the run stops");
     assert.ok(
-      events.includes(`Cloning backend failed backend could not clone ${tag("GH")} acme/backend staging`),
+      events.includes("Cloning backend failed backend could not clone acme/backend staging"),
     );
     assert.ok(!events.includes("step Building backend"), "and never starts building it");
   });
@@ -621,9 +614,7 @@ describe("cloning each app", () => {
   });
 });
 
-// A container that fails its check is renamed out of the way by the revert, and
-// the live name goes back to the release before it. What it printed on the way
-// down is the reason it failed, and nothing else was keeping it
+// What it printed on the way down is the reason, and nothing else kept it
 describe("when a health check fails", () => {
   const BACK_LOGS = [
     "2026-09-14T10:00:01.000Z Listening on 3001",
@@ -639,7 +630,7 @@ describe("when a health check fails", () => {
     host.logs(front.container, "2026-09-14T10:00:01.000Z ready on 3000");
     if (options.refuse) host.refuse(options.refuse);
 
-    const { log, events } = recorded();
+    const { log, events, parents } = recorded();
 
     const result = await deploy({
       config,
@@ -650,7 +641,7 @@ describe("when a health check fails", () => {
       health: { sleep: async () => {} },
     });
 
-    return { result, events, host };
+    return { result, events, parents, host };
   }
 
   it("checks each app on a step of its own, not beside the swap", async () => {
@@ -665,6 +656,13 @@ describe("when a health check fails", () => {
       !events.some((event) => /^(done|warn|fail) /.test(event) && /healthy after|not healthy yet/.test(event)),
       "nothing about a single check is said outside its step",
     );
+  });
+
+  it("checks health and writes the logs inside the swap step", async () => {
+    const { parents } = await failing();
+
+    assert.equal(parents.get("Health check of backend"), "swap");
+    assert.equal(parents.get("Logs of backend"), "swap");
   });
 
   it("writes out what every new container printed", async () => {
@@ -715,5 +713,97 @@ describe("when a health check fails", () => {
     assert.equal(result.ok, false);
     assert.deepEqual(result.reverted.sort(), [back.container, front.container].sort());
     assert.ok(events.some((event) => event.startsWith(`Logs of backend failed could not read the logs of ${back.container}`)));
+  });
+});
+
+// Each app is reached on a host port, which one container holds at a time
+describe("a deployment with no proxy", () => {
+  const router = topology.router.container;
+
+  const proxyless = {
+    ...config,
+    proxy: false,
+    apps: config.apps.map((app) => ({ ...app, route: undefined })),
+    environments: { staging: { branch: "staging", subnet: "172.255.0", ports: { backend: 3001 } } },
+  } satisfies Deployment;
+
+  async function deployed(options: { existing?: string[]; bodies?: Record<string, string> } = {}) {
+    const host = fakeHost({ existing: options.existing ?? [back.container, front.container] });
+    for (const [container, body] of Object.entries(options.bodies ?? HEALTHY)) host.respond(container, body);
+
+    const result = await deploy({
+      config: proxyless,
+      environment: "staging",
+      host: host.host,
+      secrets,
+      health: { sleep: async () => {} },
+    });
+
+    return { result, commands: host.commands };
+  }
+
+  const at = (commands: string[], exact: string) => commands.findIndex((command) => command === exact);
+
+  it("publishes the app's port on its container, and needs no publicPort", async () => {
+    const { result, commands } = await deployed();
+    const created = commands.find((command) => command.startsWith(`container create --name ${back.container} `));
+
+    assert.equal(result.ok, true);
+    assert.ok(created?.includes("-p 3001:3001"), created);
+  });
+
+  it("publishes nothing for an app the environment gives no port", async () => {
+    const { commands } = await deployed();
+    const created = commands.find((command) => command.startsWith(`container create --name ${front.container} `));
+
+    assert.ok(created && !created.includes(" -p "), created);
+  });
+
+  it("brings up no proxy", async () => {
+    const { commands } = await deployed();
+    assert.ok(!commands.some((command) => command.startsWith(`container create --name ${router}`)));
+  });
+
+  // Nothing holds the port meanwhile, so the old one lets go first
+  it("stops a published app's old container before starting the new one", async () => {
+    const { commands } = await deployed();
+
+    const stopped = at(commands, `container stop ${back.retired}`);
+    const started = at(commands, `container start ${back.container}`);
+
+    assert.ok(stopped >= 0 && started >= 0);
+    assert.ok(stopped < started);
+  });
+
+  it("leaves an unpublished app's old container serving until the new one is up", async () => {
+    const { commands } = await deployed();
+
+    const started = at(commands, `container start ${front.container}`);
+    const stopped = at(commands, `container stop ${front.retired}`);
+
+    assert.ok(started >= 0);
+    assert.ok(stopped === -1 || stopped > started, "stopped only by the cleanup after");
+  });
+
+  it("puts the old container back, port and all, when the new one is unhealthy", async () => {
+    const { result, commands } = await deployed({
+      bodies: { ...HEALTHY, [back.container]: '{"status":"down"}' },
+    });
+
+    assert.equal(result.ok, false);
+    assert.ok(at(commands, `container rename ${back.retired} ${back.container}`) >= 0);
+    assert.ok(
+      at(commands, `container rename ${back.retired} ${back.container}`) <
+        commands.lastIndexOf(`container start ${back.container}`),
+      "and started again after it has its name back",
+    );
+  });
+
+  // An earlier proxy would keep holding the public port
+  it("removes a proxy an earlier deploy left behind", async () => {
+    const { commands } = await deployed({ existing: [back.container, front.container, router] });
+
+    assert.ok(commands.includes(`container stop ${router}`));
+    assert.ok(commands.some((command) => command.startsWith("container rm") && command.includes(router)));
   });
 });

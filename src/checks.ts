@@ -5,13 +5,7 @@ import { quote } from "./shell.js";
 import { attachment, builderOf } from "./steps.js";
 import type { AppSpec, VerifySpec } from "./types.js";
 
-// What redkite's verify step runs. An app declares the commands that decide
-// whether its build works, and this is the whole of putting them somewhere they
-// can reach the services the deployment brought up.
-//
-// The image is the builder rather than the runtime one. The runtime image holds
-// the compiled output and nothing that compiled it, so the test runner is not
-// in there, and installing one at check time would test a different tree.
+// Runs in the builder image, the only one holding the test runner
 
 export async function runChecks(input: Built, context: Context): Promise<Released> {
   const checked: string[] = [];
@@ -23,8 +17,7 @@ export async function runChecks(input: Built, context: Context): Promise<Release
     checked.push(app.name);
   }
 
-  // Anything that got here passed: a failing command throws. The lists a swap
-  // fills stay empty, because a verify run moves no addresses
+  // A failing command throws, and a verify run moves no addresses
   return { ...input, ok: true, released: [], reverted: [], checked };
 }
 
@@ -32,16 +25,14 @@ async function checkApp(app: AppSpec, spec: VerifySpec, input: Built, context: C
   const flags = [
     "run --rm",
     ...attachment(spec.network ?? "deployment", context.topology),
-    // Before the named settings, so a check can override what the vault says
-    // without editing the vault
+    // Before the named settings, so a check can override the vault
     ...(await envFlags(app, context)),
     `--workdir ${appRoot(app.dir)}`,
     ...settings({ ...app.environment, ...spec.environment }),
     builderOf(input, app.name),
   ];
 
-  // In order and one at a time. The first is usually what brings the database
-  // to the schema the rest expect, so running them together would race
+  // One at a time: the first usually migrates the database the rest expect
   for (const command of spec.steps) {
     context.task.detail(`${app.name}: ${command}`);
 
@@ -57,8 +48,7 @@ function settings(environment: Record<string, string>) {
   return Object.entries(environment).map(([name, value]) => `-e ${name}=${quote(value)}`);
 }
 
-// Checked before the run starts, so asking for a verify that would check
-// nothing fails without having created a network or built an image
+// Checked before the run starts, so nothing is created first
 export function assertCheckable(plan: Plan) {
   if (plan.config.apps.some((app) => app.verify)) return;
 

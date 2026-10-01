@@ -1,0 +1,66 @@
+name: release
+
+# A tag is the whole trigger. Publishing from a laptop is what lets a release go
+# out from a tree nobody else can see, and provenance is only worth something if
+# the thing that signs it is the thing that built it
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Moving the major tag the action is used by
+      contents: write
+      # What npm signs the provenance attestation with
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      # A tag naming a version the manifest does not is a release that publishes
+      # one number under another, and npm cannot take a version back
+      - name: The tag and the manifest have to agree
+        run: |
+          set -euo pipefail
+          tagged="${GITHUB_REF_NAME#v}"
+          packaged="$(node -p 'require("./package.json").version')"
+          if [ "$tagged" != "$packaged" ]; then
+            echo "Tag $GITHUB_REF_NAME says $tagged, package.json says $packaged" >&2
+            exit 1
+          fi
+
+      - run: npm run check
+
+      - run: npm test
+
+      - run: node scripts/verifyRelease.mjs
+
+      # prepublishOnly runs check, test and verifyRelease again. That is not
+      # redundant: it is the gate that still holds when a release goes out by
+      # hand, and this workflow is the one that does not have to be trusted
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # README and examples/actions say JVKdouk/redkite@v0, so v0 has to name
+      # this commit or every documented workflow installs the previous release.
+      # Last, because a major tag pointing at something unpublished is worse
+      # than one pointing at the release before it
+      - name: Move the major tag
+        run: |
+          set -euo pipefail
+          major="v${GITHUB_REF_NAME#v}"
+          major="${major%%.*}"
+          git tag -f "$major" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$major"

@@ -1,12 +1,10 @@
-import type { AppSpec, Deployment, ServiceSpec } from "./types.js";
+import type { AppSpec, Deployment, Environment, ServiceSpec } from "./types.js";
 
 import { environmentOf } from "./config.js";
 import { mountFor } from "./layout.js";
 import { logMount } from "./services/proxy.js";
 
-// Every name and address the deployment uses, derived from the app list. This
-// is the file that replaces the constants block: nothing is chosen by hand, so
-// adding an app cannot collide with an address somebody already picked.
+// Every name and address, derived from the app list rather than chosen by hand
 
 const NGINX_OCTET = 20;
 const APP_BLOCK_START = 21;
@@ -21,7 +19,9 @@ export type AppTopology = {
   currentAddress: string;
   retiredAddress: string;
   port: number;
-  route: string;
+  route?: string;
+  // The port published on the deploy host, when there is no proxy
+  published?: number;
   volumes: { volume: string; mountPath: string }[];
   caches: Record<string, string>;
 };
@@ -40,10 +40,9 @@ export type Topology = {
   network: string;
   subnet: string;
   cidr: string;
-  // Absent for an environment written for verify alone, which publishes nothing
+  // Absent for a verify-only environment, which publishes nothing
   publicPort?: number;
-  // Derived, never listed. Apps with routes imply exactly one proxy, and it
-  // keeps the address it was given before any of this was derived
+  // Derived, never listed, and keeps the address it was given
   router: ServiceTopology;
   apps: AppTopology[];
   services: ServiceTopology[];
@@ -57,8 +56,7 @@ export function topologyFor(config: Deployment, environment: string): Topology {
   if (!env) {
     const known = Object.keys(config.environments ?? {});
 
-    // An environment is a file, so having none is a different mistake from
-    // asking for one that is not there, and reads as one
+    // Having none is a different mistake from asking for one that is not there
     if (known.length === 0) {
       throw new Error(
         `No environments. Each one is a redkite.<name>.config.ts beside the ` +
@@ -71,11 +69,13 @@ export function topologyFor(config: Deployment, environment: string): Topology {
     );
   }
 
+  assertPorts(config, environment, env);
+
   const prefix = `${config.project}-${environment}`;
   const address = (octet: number) => `${env.subnet}.${octet}`;
 
   const apps = config.apps.map((app, index) =>
-    appTopology(app, prefix, environment, address, index),
+    appTopology(app, prefix, environment, address, index, env.ports?.[app.name]),
   );
 
   const services = config.services.map((service, index) =>
@@ -93,8 +93,7 @@ export function topologyFor(config: Deployment, environment: string): Topology {
       name: "nginx",
       container: `${prefix}-nginx`,
       address: address(NGINX_OCTET),
-      // Only a directory the deployment named. Nothing mounted otherwise, so a
-      // proxy that says nothing about its logs is the container it always was
+      // Only a directory the deployment named, so a silent proxy is unchanged
       volumes: routerVolumes(config),
     },
     apps,
@@ -109,6 +108,7 @@ function appTopology(
   environment: string,
   address: (octet: number) => string,
   index: number,
+  published: number | undefined,
 ): AppTopology {
   const container = `${prefix}-${app.name}`;
   const base = APP_BLOCK_START + index * 2;
@@ -118,9 +118,7 @@ function appTopology(
     mountPath,
   }));
 
-  // Deduplicated by where each one mounts: an app that is the whole repository
-  // resolves the root and its own node_modules to one path, and two ids for one
-  // target would be a second cache nothing ever writes to
+  // Deduplicated by mount point, since two ids on one target is a dead cache
   const targets = new Set<string>();
   const caches: Record<string, string> = {};
 
@@ -142,6 +140,7 @@ function appTopology(
     currentAddress: address(base + 1),
     port: app.port,
     route: app.route,
+    published,
     volumes,
     caches,
   };
@@ -168,6 +167,54 @@ function serviceTopology(
   };
 }
 
+// Per environment, and the way in only when there is no proxy, never both
+function assertPorts(config: Deployment, environment: string, env: Environment) {
+  const named = Object.entries(env.ports ?? {});
+
+  if (config.proxy !== false && named.length > 0) {
+    throw new Error(
+      `${environment} publishes ports for ${named.map(([name]) => name).join(", ")}, and ` +
+        "the deployment runs a proxy, which is the way in. proxy: false publishes each " +
+        "app's port instead",
+    );
+  }
+
+  if (config.proxy === false && env.publicPort !== undefined) {
+    throw new Error(
+      `${environment} names a publicPort, and the deployment runs no proxy to publish on ` +
+        "it. Each app's port is published by ports instead",
+    );
+  }
+
+  const apps = new Set(config.apps.map((app) => app.name));
+  const unknown = named.map(([name]) => name).filter((name) => !apps.has(name));
+
+  if (unknown.length > 0) {
+    throw new Error(
+      `${environment} publishes ports for ${unknown.join(", ")}, which this deployment has ` +
+        `no app by that name for. Its apps are ${[...apps].join(", ")}`,
+    );
+  }
+
+  const invalid = named.find(([, port]) => !Number.isInteger(port) || port < 1 || port > 65535);
+  if (invalid) throw new Error(`${environment} publishes ${invalid[0]} on ${invalid[1]}, which is not a port`);
+
+  const held = new Map<number, string>();
+
+  for (const [name, port] of named) {
+    const other = held.get(port);
+
+    if (other) {
+      throw new Error(
+        `${environment} publishes both ${other} and ${name} on ${port}, and a host port is ` +
+          "held by one container at a time",
+      );
+    }
+
+    held.set(port, name);
+  }
+}
+
 function routerVolumes(config: Deployment) {
   const logs = logMount(config.proxy);
   return logs ? [logs] : [];
@@ -190,9 +237,7 @@ function extraHosts(
     if (service.alias) hosts[service.alias] = service.address;
   }
 
-  // Declared last, but never over a derived one: a name that already resolves
-  // to a container in this deployment would send its traffic somewhere else,
-  // and the deploy would look like it worked
+  // Never over a derived one, which would send a container's traffic elsewhere
   for (const [name, address] of Object.entries(declared)) {
     if (name in hosts) {
       throw new Error(

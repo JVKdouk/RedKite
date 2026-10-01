@@ -5,9 +5,7 @@ import config from "./deployment.js";
 import { down, rollback, topologyFor } from "../src/index.js";
 import { fakeHost } from "./fakes.js";
 
-// A cancelled job is killed rather than asked, so nothing it was holding
-// survives to tidy up. Both of these read what the host is in rather than what
-// a deploy remembered, which is the only thing left to read.
+// Both read what the host is in, the only thing a killed job leaves
 
 const topology = topologyFor(config, "staging");
 const front = topology.apps.find((app) => app.name === "frontend")!;
@@ -29,8 +27,7 @@ async function stop(existing: string[] = []) {
 }
 
 describe("putting back what a run did not finish", () => {
-  // One exists between the swap and the cleanup that removes it, so finding one
-  // means an address was moved and nothing said whether that worked
+  // One exists only between the swap and the cleanup, so it means a moved address
   it("puts back every app that has a retired container", async () => {
     const { result } = await run([
       front.container,
@@ -56,9 +53,7 @@ describe("putting back what a run did not finish", () => {
     ]);
   });
 
-  // An interrupted run leaves one behind, and rename refuses rather than
-  // clobbers. Without clearing it the new container stays live and the old one
-  // never gets its name back
+  // Rename refuses rather than clobbers, so the slot is cleared first
   it("clears a failed container an earlier run left in the way", async () => {
     const { result, host } = await run([
       front.container,
@@ -81,8 +76,7 @@ describe("putting back what a run did not finish", () => {
     assert.deepEqual(host.commands.filter((c) => c.startsWith("container rename")), []);
   });
 
-  // A first deploy has nothing behind it, so the one that failed is left where
-  // it was renamed to rather than started again from nowhere
+  // A first deploy has nothing behind it, so the failed one is left renamed
   it("does not start what was never there", async () => {
     const { host } = await run([front.container]);
 
@@ -107,7 +101,7 @@ describe("taking an environment down", () => {
     ].sort());
   });
 
-  // Stopped rather than removed, so the next run adopts them where it left off
+  // Stopped rather than removed, so the next run adopts them
   it("never removes what it stopped", async () => {
     const { host } = await stop([front.container]);
 

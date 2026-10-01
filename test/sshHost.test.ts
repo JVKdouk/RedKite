@@ -7,8 +7,7 @@ import { join } from "node:path";
 
 import { spawnCollect, sshHost, type Ssh } from "../src/index.js";
 
-// The host's whole surface is the argv it hands ssh, so that is what this
-// asserts on. Nothing here opens a connection.
+// The argv handed to ssh is the whole surface; nothing here opens a connection
 
 function recorder(answers: string[] = []) {
   const calls: { args: string[]; stdin?: string }[] = [];
@@ -23,8 +22,7 @@ function recorder(answers: string[] = []) {
 
 const last = (calls: { args: string[] }[]) => calls.at(-1)?.args.at(-1) ?? "";
 
-// An image is hundreds of megabytes, which is neither a string to write nor an
-// argument to pass. It goes down the connection that is already open
+// Hundreds of megabytes, so it goes down the connection already open
 describe("shipping something to the ssh host", () => {
   it("pipes a local command into one running there", async () => {
     const { run } = recorder();
@@ -46,8 +44,7 @@ describe("shipping something to the ssh host", () => {
     assert.ok(command.endsWith("'docker load'"));
   });
 
-  // The same connection every other command uses, or the stream pays for a
-  // handshake and a second authentication
+  // The same connection, or the stream pays a handshake and an authentication
   it("sends it down the connection already open", async () => {
     const { run } = recorder();
     let command = "";
@@ -78,9 +75,7 @@ describe("the ssh host", () => {
     assert.ok(calls.at(-1)?.args.includes("ubuntu@example.com"));
   });
 
-  // Killing the ssh client here leaves what it was carrying running there. Job
-  // control is what gives that command a process group a second connection can
-  // reach, and the pid file is where the handle is kept
+  // Job control gives the command a process group, and the pid file keeps it
   it("runs it in a process group it can find again", async () => {
     const { run, calls } = recorder();
     const host = await sshHost("ubuntu@example.com", { run });
@@ -104,8 +99,7 @@ describe("the ssh host", () => {
     assert.ok(calls.at(-2)?.args.at(-1)?.includes("run.1.pid"));
   });
 
-  // Signalled where it is running. Killing the client here would leave the
-  // build going with nothing left able to reach it
+  // Signalled where it runs: killing the client leaves the build unreachable
   it("signals the groups on the far side, not the connection", async () => {
     const { run, calls } = recorder(["/home/ubuntu", "0"]);
     const host = await sshHost("ubuntu@example.com", { run });
@@ -126,8 +120,7 @@ describe("the ssh host", () => {
     assert.match(last(calls), /kill -KILL -"\$p"/);
   });
 
-  // The count is what the caller waits on, and zero is the only answer that
-  // lets a stopped deploy finish
+  // The count is what the caller waits on, and only zero finishes a stop
   it("answers with how many are still running there", async () => {
     const { run } = recorder(["/home/ubuntu", "3"]);
     const host = await sshHost("ubuntu@example.com", { run });
@@ -142,8 +135,7 @@ describe("the ssh host", () => {
     assert.equal(await host.stop("TERM"), 0);
   });
 
-  // One handshake for the whole deploy. A round trip is otherwise most of what
-  // a command costs, and a deploy makes dozens of them
+  // One handshake for a deploy that makes dozens of commands
   it("multiplexes every command onto one connection", async () => {
     const { run, calls } = recorder();
     const host = await sshHost("ubuntu@example.com", { run });
@@ -155,8 +147,7 @@ describe("the ssh host", () => {
     assert.ok(args.some((arg) => arg.startsWith("ControlPath=")));
   });
 
-  // A deploy hands over a vault's contents, and the last thing it should do
-  // that to is a machine that answered to the address and nothing else
+  // A deploy hands over a vault's contents, so the address alone is not enough
   it("refuses a host whose key changed, without being asked to", async () => {
     const { run, calls } = recorder();
     await sshHost("ubuntu@example.com", { run });
@@ -179,8 +170,7 @@ describe("the ssh host", () => {
     assert.ok(calls[0]?.args.includes("StrictHostKeyChecking=yes"));
   });
 
-  // A question nobody is there to answer is a deploy that hangs rather than
-  // one that fails, whichever of the three it is checking under
+  // A question nobody can answer hangs a deploy, under any of the three
   it("never leaves ssh able to ask", async () => {
     for (const hostKeys of ["accept-new", "strict", "off"] as const) {
       const { run, calls } = recorder();
@@ -190,8 +180,7 @@ describe("the ssh host", () => {
     }
   });
 
-  // The host clones the repositories itself, which it can only do with the
-  // agent this machine is holding
+  // The host clones for itself, which needs the agent this machine holds
   it("forwards the agent", async () => {
     const { run, calls } = recorder();
     await sshHost("ubuntu@example.com", { run });
@@ -203,7 +192,7 @@ describe("the ssh host", () => {
     const { run } = recorder(["/home/deployer\n"]);
     const host = await sshHost("ubuntu@example.com", { run });
 
-    // A literal ~ would only survive as long as every caller used a shell
+    // A literal ~ would only survive while every caller used a shell
     assert.equal(host.cache, "/home/deployer/.cache/redkite");
   });
 
@@ -235,11 +224,9 @@ describe("the ssh host", () => {
 });
 
 
-// There is no sshd in this suite, and the half worth proving is what the shell
-// on the other side does with what it is handed. So it is handed to a shell
-// here instead: the command is the same string either way.
+// No sshd here, so the command is run locally; the string is the same either way
 describe("what the far side is left running", () => {
-  // ssh's own argv is everything before the command, which is the last of them
+  // ssh's own argv is everything before the command
   const asFarSide: Ssh = async (args) =>
     await spawnCollect("sh", ["-c", args.at(-1) ?? "true"]);
 
@@ -262,8 +249,7 @@ describe("what the far side is left running", () => {
   it("records the group of what it started", async () => {
     const { host, directory } = await opened();
 
-    // A grandchild: the thing a build actually is, and the thing that survives
-    // when only the command's own process is signalled
+    // A grandchild, which is what a build is and what one signal would miss
     const running = host.sh("sh -c 'sleep 20' ");
     let pid = "";
 

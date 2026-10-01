@@ -3,27 +3,13 @@ import { secretsManagerStore } from "../secrets/manager.js";
 import { bitwardenStore } from "../secrets/store.js";
 import type { SecretRef } from "../types.js";
 
-// Redkite's own vault, and a plugin like any other: a deployment that does not
-// register it cannot resolve a bitwarden ref, and says so before it builds.
-//
-// Bitwarden is two services rather than one. Secrets Manager holds secrets for
-// machines and opens with an access token, which is what a deploy wants. The
-// password manager holds a person's vault and wants a session obtained by
-// unlocking it. The ids are different, the CLIs are different, and giving one
-// service's credential to the other is how a deploy ends up waiting on a
-// password prompt nobody can see.
+// Two Bitwarden services: Secrets Manager takes an access token, the password manager a session
 
-// The one variable either side reads, so a job sets one thing whichever it is
+// The one variable either side reads, so a job sets one thing
 const KEY = "BW_KEY";
 
 export type BitwardenOptions = {
-  // Which Bitwarden this deployment reads, and what opens it.
-  //
-  // true, the default, is Secrets Manager: BW_KEY is the access token. A
-  // string is that token given directly, for a config naming its own variable.
-  //
-  // false is the password manager: BW_KEY is a session from bw unlock --raw,
-  // and without one the api credentials obtain one.
+  // true (default) is Secrets Manager and BW_KEY is its token; false is the password manager
   secrets?: boolean | string;
 };
 
@@ -52,8 +38,7 @@ async function open(secrets: boolean | string, context: OpenContext) {
   return await secretsManagerStore({ token, detail: context.detail });
 }
 
-// The personal vault. A session skips the login and the unlock, which is two
-// fewer round trips and the only way a job without a master password gets in
+// A session skips the login and unlock, the only way in without a master password
 async function passwords(context: OpenContext) {
   const session = process.env[KEY];
   if (session) return await bitwardenStore({ session, detail: context.detail });
@@ -76,9 +61,7 @@ function required(name: string) {
   );
 }
 
-// The plugin is what a deployment registers; the item is what an app points at.
-// Both are named bitwarden because both are the same vault, and the id is a
-// pointer rather than a secret, so it belongs in the config
+// Both are named bitwarden; an id is a pointer, not a secret, so it may be committed
 export const bitwarden = Object.assign(vault, {
   item: (id: string): SecretRef => ({ provider: "bitwarden", id }),
 });

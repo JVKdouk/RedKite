@@ -15,9 +15,7 @@ import {
 import { fakeHost } from "./fakes.js";
 import { Docker } from "../src/index.js";
 
-// A snapshot is a control-plane call rather than anything the deploy host does,
-// so what is asserted is the request each one builds. The provider itself is
-// injected, which is the only part of these that cannot be run here.
+// Asserts the request each one builds, with the provider injected
 
 const said: string[] = [];
 
@@ -33,7 +31,13 @@ function contextFor(): Context {
     docker: new Docker(host.host),
     secrets: {},
     log: silent,
-    task: { detail: (m) => said.push(m), line: () => {}, done: () => {}, fail: () => {} },
+    task: {
+      detail: (m) => said.push(m),
+      line: () => {},
+      done: () => {},
+      fail: () => {},
+      step: () => silent.step(""),
+    },
   };
 }
 
@@ -46,10 +50,7 @@ const built: Built = {
 
 const plan = { config, environment: "staging" };
 
-// A plugin carries the step rather than being one, so every assertion below is
-// about the single step it registered. Stored erased, because a list assembled
-// from a config cannot carry each step's own input type: both of these sit at
-// swap:before, which is what makes Built the value they are handed
+// Stored erased, since a list from a config cannot carry each input type
 function only(plugin: Plugin) {
   const [step] = plugin.steps ?? [];
   assert.ok(step, `${plugin.name} registered no step`);
@@ -89,8 +90,7 @@ describe("snapshotting RDS before a swap", () => {
     assert.ok(args[5]?.startsWith("acme-production-staging-"), args[5]);
   });
 
-  // Aurora is a cluster, and a cluster is a different call against a different
-  // thing rather than the same call with another word
+  // A cluster is a different call against a different thing
   it("asks for a cluster snapshot when that is what it was given", async () => {
     calls.length = 0;
     const step = only(rdsSnapshot({ cluster: "acme-aurora", aws }));
@@ -113,8 +113,7 @@ describe("snapshotting RDS before a swap", () => {
     assert.deepEqual(calls[1]?.slice(0, 3), ["rds", "wait", "db-snapshot-available"]);
   });
 
-  // Where the plugin is written rather than where it runs, so the config fails
-  // to load rather than the deploy failing at its first check
+  // Where the plugin is written, so the config fails to load
   it("refuses a config naming both an instance and a cluster", () => {
     assert.throws(() => rdsSnapshot({ instance: "one", cluster: "two", aws }), /different databases/);
   });
@@ -152,8 +151,7 @@ describe("snapshotting a DigitalOcean disk before a swap", () => {
     assert.ok(JSON.parse(sent[0]?.body ?? "{}").name.startsWith("vol-123-staging-"));
   });
 
-  // A volume takes a snapshot; a droplet is asked to perform one. Two shapes,
-  // which is why the target is two fields rather than one
+  // Two endpoints, which is why the target is two fields rather than one
   it("snapshots a droplet through the action endpoint", async () => {
     sent.length = 0;
     const step = only(digitalOceanSnapshot({ droplet: 42, request }));
@@ -178,8 +176,7 @@ describe("snapshotting a DigitalOcean disk before a swap", () => {
     );
   });
 
-  // Before the run starts, so a token nobody set is a config that fails while
-  // the host is untouched rather than a deploy that stops with the swap ahead
+  // Before the run starts, so a missing token leaves the host untouched
   it("refuses a missing token before anything has happened", () => {
     delete process.env["DIGITALOCEAN_TOKEN"];
     const step = only(digitalOceanSnapshot({ volume: "vol-123", request }));
@@ -199,7 +196,7 @@ describe("what a snapshot is called", () => {
     assert.equal(name, "acme-db-production-20260908104125");
   });
 
-  // RDS takes letters, digits and single hyphens, and nothing else
+  // RDS takes letters, digits and single hyphens only
   it("reduces anything else to a single hyphen", () => {
     assert.equal(snapshotName("Acme_DB v2", "pre prod", new Date(0)), "acme-db-v2-pre-prod-19700101000000");
   });

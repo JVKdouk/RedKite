@@ -6,10 +6,7 @@ import type { Deployment } from "../src/index.js";
 import { topologyFor, verify } from "../src/index.js";
 import { fakeHost } from "./fakes.js";
 
-// A verify run is the same host, the same services and the same images as a
-// deploy, stopping where one would start moving addresses. What is asserted is
-// that it builds, that it runs what the apps declare, and that it touches
-// nothing that is serving.
+// Asserts it builds, runs the apps' checks, and disturbs nothing serving
 
 const secrets = { bitwarden: { read: async () => "{}" } };
 
@@ -30,27 +27,25 @@ async function run(config: Deployment = CHECKED, options: { refuse?: string } = 
   return { result, host };
 }
 
-// The example declares checks, so a run with none is this file's to build
+// The example declares checks, so a run with none is built here
 const NONE: Deployment = {
   ...base,
   apps: base.apps.map((app) => ({ ...app, verify: undefined })),
 };
 
-// A step's failure is wrapped by the pipeline, and the reason is the cause
+// A step's failure is wrapped by the pipeline
 function reasons(error: unknown): string[] {
   if (!(error instanceof Error)) return [];
   return [error.message, ...reasons(error.cause)];
 }
 
 const topology = topologyFor(CHECKED, "staging");
-// Anything that would create, move, rename or stop one of the app containers.
 // Services are created in a verify run, apps are not
 const APPS = topology.apps.flatMap((app) => [app.container, app.retired, app.failed]);
 
 function touchesAnApp(command: string) {
   const words = command.split(" ");
-  // Building tags an image after the container, and a service is created the
-  // same way an app would be. Only the verb plus the name means a swap
+  // Only the verb plus the name means an app's container was touched
   if (words[0] !== "container" && words[0] !== "network") return false;
 
   return APPS.some((name) => words.includes(name));
@@ -84,8 +79,7 @@ describe("verify", () => {
     assert.deepEqual(result.apps.map((app) => app.name).sort(), ["backend", "frontend"]);
   });
 
-  // The proxy resolves upstreams that a verify run never creates, and
-  // publishing a port for them would take one on the machine running the checks
+  // Its upstreams are never created, and its port would take one on the host
   it("brings up the services without the proxy", async () => {
     const { result } = await run();
 
@@ -107,7 +101,7 @@ describe("verify", () => {
     }
   });
 
-  // A check reaching redis at "redis" is the whole reason to be on the network
+  // Reaching redis at "redis" is the reason to be on that network
   it("attaches the checks to the deployment network with its aliases", async () => {
     const { host } = await run();
     const check = host.commands.find((command) => command.includes("sh -c")) ?? "";
@@ -155,8 +149,7 @@ describe("verify", () => {
     assert.ok(!host.commands.some((command) => command.includes("test:integration")));
   });
 
-  // Refused before the run starts, so nothing is built for a run that would
-  // then have nothing to do
+  // Refused before the run starts, so nothing is built for it
   it("refuses a run where no app declares checks", async () => {
     const host = fakeHost();
 

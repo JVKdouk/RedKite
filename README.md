@@ -37,6 +37,7 @@ between deploys.
 - [How a deploy runs](#how-a-deploy-runs)
 - [Design](#design)
 - [Contributing](#contributing)
+- [Security](#security)
 - [License](#license)
 
 ## Quick start
@@ -363,13 +364,13 @@ commit it landed on when it ends, so the row keeps them after the step's
 progress has moved on:
 
 ```
-✔ Cloning backend: [GH] acme/backend staging -> 64ae9f1 (2s)
-✔ Building backend: 64ae9f1 (1m12s)
+✔ build (1m14s)
+  ✔ Cloning backend: acme/backend staging -> 64ae9f1 (2s)
+  ✔ Building backend: 64ae9f1 (1m12s)
 ```
 
-A repository on GitHub is named by its path, with a blue `GH` label with rounded
-ends in place of the host; anywhere without colour, a CI log or a crash log, the
-label is written `[GH]`. The `.git` is dropped. A branch goes by its name alone,
+A repository on GitHub is named by its path alone, and one anywhere else by its
+host and path, without the `.git` either way. A branch goes by its name alone,
 and a pin says which kind it is: `tag v1.2.3`, `commit 9f2b4c1`.
 
 A repository that cannot be reached, or a branch it does not have, fails that
@@ -589,34 +590,49 @@ any location: where a location sends a request is its app's route.
 
 #### Logging
 
-Without `logs`, nginx logs the way its image does, to the container's own output.
-`logs` says where instead, or that there is nothing to log:
+Without `logs`, nginx logs the way its image does: the image points its log
+files at the container's output, which is what `docker logs` reads. `logs`
+adds files beside that, drops docker, or turns it all off:
 
 ```ts
 proxy: nginx({
-  logs: { directory: "/var/log/acme", errors: "warn" },
+  logs: { directory: "/var/log/acme", level: "warn" },
 }),
 ```
 
-| `logs` | What nginx writes |
+| `logs` | Where nginx writes |
 | --- | --- |
 | absent | Whatever the image does, which for `nginx:stable` is `docker logs` |
-| `false` | No access log, and errors nowhere: `error_log` has no off, so they go to `/dev/null` at `emerg` |
-| `{}` | Access and errors on the container's output, stated rather than left to the image |
-| `{ directory }` | Files in that directory on the deploy host |
+| `{}` | `docker logs`, stated rather than left to the image |
+| `{ directory }` | Files in that directory on the deploy host, and `docker logs` as well |
+| `{ directory, docker: false }` | The files alone |
+| `false` | Nowhere: no access log, and errors to `/dev/null` at `emerg`, since `error_log` has no off |
 
-`directory` is mounted where nginx writes, and each environment writes files of
-its own into it, `staging.access.log` and `staging.error.log`, so two
-environments on one host can share it. It has to be an absolute path: docker
-reads anything else as the name of a volume. `access: false` turns off only the
-access log. `errors` is how severe something has to be to reach the error log,
-`error` unless it says otherwise.
+`directory` is mounted where nginx writes, and has to be an absolute path:
+docker reads anything else as the name of a volume. Each environment gets files
+of its own in it, `staging.access.log` and `staging.error.log`, so two
+environments on one host can share it. `access` and `error` name the files
+instead, and each has to be a file name in that directory. `access: false`
+turns the access log off everywhere it would have gone. `level` is how severe
+something has to be to reach the error log, `error` unless it says otherwise,
+and applies wherever errors are written.
 
-The logging lines go at the top of the server block, so an `access_log` written
-in `server` still replaces them, and an `access_log off;` in one app's
-`locations` quiets just that route. Changing any of it recreates the proxy
-container on the next deploy, since the mount and the config are what it was
-created from.
+A config that would write nowhere, or somewhere nobody keeps, is refused rather
+than rendered: a file name with no directory, which would sit inside the
+container and be gone when it is recreated; `docker: false` with no directory,
+which is `logs: false` said the long way; and the access and error logs named
+the same file.
+
+nginx writes to every `access_log` and `error_log` a block gives it, so the
+logging lines go at the top of the server block and one written in `server`
+adds a destination beside them. `access_log off;` written there replaces every
+destination at once, and in one app's `locations` it quiets just that route.
+Changing any of it recreates the proxy container on the next deploy, since the
+mount and the config are what it was created from.
+
+The image's own `nginx.conf` writes what happens outside this server block, such
+as startup, to `error.log` under the same path. With a directory mounted that is
+a file in it too, so naming the error log `error.log` puts both in one file.
 
 **A line replaces rather than repeats.** nginx refuses a second
 `proxy_read_timeout` outright instead of letting the later one win, so
@@ -627,6 +643,54 @@ replaces only the Host header and leaves the other three alone.
 The upstreams, the location per route, the failover, `listen` and `proxy_pass`
 stay derived. A `listen` in the server block is refused: the published port maps
 onto the one inside the container, so only one side of that may say it.
+
+#### Without a proxy
+
+A deployment can run no proxy at all, and have each app reached on a port of its
+own on the deploy host:
+
+```ts
+// redkite.config.ts
+export default defineDeployment({
+  project: "acme",
+  proxy: false,
+  apps: [
+    { name: "web", port: 3000, /* no route */ },
+    { name: "api", port: 3001, /* no route */ },
+  ],
+});
+
+// redkite.production.config.ts
+export default defineEnvironment({
+  branch: "main",
+  subnet: "10.20.0",
+  host: { bastion: "deploy@acme.example" },
+  ports: { web: 80, api: 8080 },
+});
+```
+
+`ports` maps an app to the host port published for it, and lives on the
+environment because two environments on one host cannot hold the same port. An
+app with no entry is not published, which suits one that only other apps reach.
+Nothing else about a deploy changes: the same build, the same health check on
+the container itself, the same revert.
+
+**It is not zero downtime.** The proxy is what lets a new container start and
+pass its health check while the old one still serves. A host port is held by one
+container at a time, so without a proxy a published app's old container stops
+just before the new one starts, and the app is down until the new one is up. An
+app with no published port swaps the way it always did. If the new container
+fails its health check, it is stopped and the old one started again, still bound
+to its port.
+
+What does not fit is refused rather than ignored: `ports` on an environment of a
+deployment that runs a proxy, a `publicPort` on one that does not, a port for an
+app the deployment does not have, a number that is not a port, and two apps on
+one port. So are routes: an app needs one while there is a proxy, and may not
+have one when there is not, since nothing would read it.
+
+Turning the proxy off stops and removes the proxy container an earlier deploy
+started, on the next deploy, so it does not go on holding the public port.
 
 ### Services
 
@@ -1136,17 +1200,23 @@ shuts to a single line carrying what it cost.
 
 ```
 00:04   ✔ setup                                                             4s
-00:13   ✔ build                                                            13s
-01:18 ⠙ ▾ Building web: yarn build  quiet 8s                             1m05s
-        │ #15 [builder 10/10] RUN yarn build
-        │    ▲ Next.js 15.1.6
-        │    Creating an optimized production build ...
-        · verify
+01:18 ⠴ ▸ build                                                          1m14s
+00:06     ✔ Cloning web: acme/web main -> 64ae9f1                           2s
+01:18   ⠴ ▾ Building web  yarn build  quiet 8s                           1m12s
+          │ #15 [builder 10/10] RUN yarn build
+          │    ▲ Next.js 15.1.6
+          │    Creating an optimized production build ...
         · swap
         · cleanup
 
 ↑↓ move · enter open · shift+↑ latest · +/- all · w wrap · q quit
 ```
+
+What a phase does for each app is a step of its own, drawn under the phase:
+cloning and building under `build`, each health check and each container's logs
+under `swap`. A phase whose work is all in its children is as busy as they are,
+so it never says it has gone quiet while one of them is running; the child that
+has stopped talking says so on its own row.
 
 The points under the open step are the ones the run will still walk. A deploy
 knows its whole list before it starts, so how much is left is on screen from the
@@ -1298,7 +1368,7 @@ There is a composite action in this repository. `verify` on a pull request,
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: JVKdouk/redkite@v1
+- uses: JVKdouk/redkite@v0
   with:
     command: deploy
     environment: production
@@ -1355,7 +1425,7 @@ that is what `rollback` looks for:
 
 ```yaml
 - if: cancelled()
-  uses: JVKdouk/redkite@v1
+  uses: JVKdouk/redkite@v0
   with:
     command: rollback
     environment: production
@@ -1420,6 +1490,15 @@ nothing but which of the two the CLI constructs.
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the layout of the source, how the
 tests are organised, and what to run before opening a pull request.
+
+[CHANGELOG.md](./CHANGELOG.md) is what changed in each release, and which of
+those changes were breaking.
+
+## Security
+
+[SECURITY.md](./SECURITY.md) says where to report a vulnerability, and what
+redkite does with your secrets, your host keys and your crash logs. Report
+privately rather than in an issue.
 
 ## License
 

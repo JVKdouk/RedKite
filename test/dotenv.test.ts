@@ -7,9 +7,7 @@ import { after, describe, it } from "node:test";
 import { loadDotenv } from "../src/cli/dotenv.js";
 import { parseEnv } from "../src/environment.js";
 
-// The credentials a deploy needs are the one thing that cannot live in the
-// config, so they live beside it. Which file answers depends on the
-// environment being deployed, most specific first.
+// Credentials live beside the config, and which file answers is most specific first
 
 const made: string[] = [];
 const KEYS = ["BW_KEY", "OTHER", "QUOTED", "SPACED"];
@@ -59,7 +57,7 @@ describe("reading the credentials beside the config", () => {
     assert.equal(process.env["BW_KEY"], "plain");
   });
 
-  // What the job set was set on purpose, and a file should not talk over it
+  // What the job set was set on purpose, and a file must not talk over it
   it("never replaces what the environment already says", async () => {
     const root = await project({ ".env.staging.deploy": "BW_KEY=from-a-file\n" });
     process.env["BW_KEY"] = "from-the-job";
@@ -102,7 +100,7 @@ describe("what a line in one of those files may say", () => {
     assert.deepEqual(values, { A: "quoted", B: "single", C: "bare" });
   });
 
-  // A vault url carries them, and splitting on the first = is what keeps it
+  // A vault url carries them, so only the first = splits
   it("keeps every character after the first equals", () => {
     assert.deepEqual(parseEnv("URL=postgres://u:p@h:5432/db?x=1\n"), {
       URL: "postgres://u:p@h:5432/db?x=1",

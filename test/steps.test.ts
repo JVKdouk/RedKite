@@ -4,9 +4,7 @@ import { describe, it } from "node:test";
 import config from "./deployment.js";
 import { attachment, topologyFor } from "../src/index.js";
 
-// What a step's container is attached to. The deployment network is the only
-// one where a service answers to the alias the apps know it by, and that is
-// what a migration against a database this deployment runs needs
+// The deployment network is where a service answers to its alias
 
 const topology = topologyFor(config, "staging");
 

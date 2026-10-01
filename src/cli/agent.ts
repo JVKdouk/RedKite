@@ -3,29 +3,22 @@ import { execFileSync } from "node:child_process";
 import { environmentOf } from "../config.js";
 import type { Deployment } from "../types.js";
 
-// Cloning private repositories and reaching the deploy host both go through
-// the agent, so a deploy without one fails halfway rather than at the start
 
-// Asked before one is demanded. A runner has no keys and no way to be prompted
-// for one, and a deployment that reaches no other machine and clones nothing
-// has no use for an agent: insisting on one there is a green run turned red
+// Only where a key is actually needed; a runner has no way to be prompted
 export function needsAgent(config: Deployment, environment: string) {
   if (environmentOf(config, environment)?.host?.bastion) return true;
 
   return config.apps.some((app) => app.repo !== undefined && overSsh(app.repo));
 }
 
-// A clone URL that names a transport of its own carries its own credentials.
-// Anything else is the scp-like form, which is ssh and wants a key
+// Anything not naming its own transport is the scp-like form, which wants a key
 function overSsh(repo: string) {
   return !/^(https?|git|file):\/\//.test(repo);
 }
 
 export const AGENT_STARTED = "no SSH agent was running, so one was started";
 
-// Runs before the view opens, because ssh-add may ask for a passphrase and it
-// cannot ask through a screen something else is drawing. Whether one was started
-// is answered rather than said, so the step that opens the connection says it
+// Runs before the view opens, since ssh-add may ask for a passphrase
 export function requireAgent() {
   const existing = process.env["SSH_AUTH_SOCK"];
   if (existing) return { socket: existing, started: false };

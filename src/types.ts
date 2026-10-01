@@ -1,312 +1,158 @@
 import type { AnyStep } from "./pipeline.js";
 import type { Plugin } from "./plugin.js";
 
-// The shapes a deploy config is written against. Nothing here knows about
-// Docker or git, so a config can be planned and asserted on without a host to
-// deploy to.
-
 export type Environment = {
-  // Where the images are built. "host" is the deploy host, which is where they
-  // are needed and costs nothing to move them. "local" builds on this machine
-  // and ships the result, for a host too small to compile on. Ignored when the
-  // deploy host is already this machine
+  // "host" builds on the deploy host, "local" here and ships the image
   buildOn?: "host" | "local";
-  // Git ref the apps are built from, the only per-environment source difference
   branch: string;
-  // First three octets, the allocator owns the fourth. One /16 per environment
+  // First three octets; the allocator owns the fourth
   subnet: string;
-  // Port published on the host, the only port a person outside ever types.
-  // A verify environment has none: nothing serves in one, so there is no proxy
-  // to publish and no traffic to publish it for
+  // Absent for a verify environment, which serves nothing and runs no proxy
   publicPort?: number;
-  // The machine the containers run on, and which builds the images. Absent
-  // means this one
   host?: DeployHost;
-  // Hostname to address, added to every container beside the ones the topology
-  // derives. For a database or a legacy service that has no DNS the apps can
-  // use, and whose address is what differs between environments
   extraHosts?: Record<string, string>;
-  // App name to the items this environment reads, after the app's own. Which
-  // item is usually what differs between staging and production, and the rest
-  // of what differs already lives here
   secrets?: Record<string, SecretRefs>;
-  // App name to container path to item, laid over the app's own files
   files?: Record<string, Record<string, SecretRef>>;
-  // Steps for this environment alone. One at a point the deployment already
-  // fills replaces it here, where it stood. One only this environment has runs
-  // ahead of the deployment's, so a snapshot lands above the migration
+  // One at a point the deployment already fills replaces it, in place
   steps?: AnyStep[];
+  // App name to published port, for a deployment that runs no proxy
+  ports?: Record<string, number>;
 };
 
-// Where a step's container is attached. "host" is the deploy host's own stack,
-// which reaches whatever that machine already reaches. "deployment" is the
-// network the apps and services run on, which is what resolves a service by
-// the alias the apps know it by
 export type StepNetwork = "host" | "deployment" | "none" | { named: string };
 
-// How the deploy host proves it is the machine it says it is, before a key,
-// an environment file or an image is handed to it
 export type HostKeys =
-  // Trusted the first time and refused if the key ever changes after that,
-  // which is what a host on a stable address wants and needs no setup
   | "accept-new"
-  // Refused unless it is already in known_hosts. Nothing is taken on trust,
-  // at the cost of putting the key there before the first deploy
   | "strict"
-  // Checked not at all. For a host whose address is handed out again and
-  // again, and only where nothing on the way to it can be listened to
   | "off";
 
 export type DeployHost = {
-  // SSH destination, user@address
   bastion: string;
   // Socket path on that machine. Local when absent, deploying to this one
   socket?: string;
-  // Defaults to accept-new
   hostKeys?: HostKeys;
 };
 
-// One item in a store, named at the point of use rather than through a lookup
-// table. The provider tag is what routes it to a store at deploy time
 export type SecretRef = {
-  // Which store resolves this, and the primitive that produced it
   provider: string;
-  // The store's own identifier for the item
   id: string;
 };
 
-// One entry, or several merged in order. A key set by a later ref wins
+// One entry, or several merged in order: a key set by a later ref wins
 export type SecretRefs = SecretRef | SecretRef[];
 
-// The proxy every app's route is resolved by. Written with nginx(), because
-// what redkite derives is the server block and the upstreams and what this
-// says is everything around them
 export type ProxySpec = {
-  // Image it runs, pinned rather than floating
   image?: string;
-  // Largest request body it accepts before answering 413
   maxBodySize?: string;
-  // Lines put inside the server block, above the locations. For what belongs
-  // to the whole server: a redirect, a rate limit zone, an error page
   server?: string[];
-  // Lines put inside every location, below what redkite sets, so one of these
-  // replaces a header rather than being replaced by it
+  // Added below redkite's own lines, so these override them; locations is per app
   location?: string[];
-  // Lines for one app's location alone, keyed by the app's name. Below the lines
-  // every location gets, so one of these replaces those for that app only
   locations?: Record<string, string[]>;
-  // Where the proxy writes what it logs, and whether it logs at all. Absent
-  // leaves it to the image, which writes to the container's own output
   logs?: false | ProxyLogs;
 };
 
 export type ProxyLogs = {
-  // A directory on the deploy host, mounted where nginx writes its logs. Each
-  // environment writes files of its own into it. Absent keeps them on the
-  // container's output, where docker logs reads them
   directory?: string;
-  // One line per request. On unless this says false
-  access?: boolean;
-  // How severe something has to be to reach the error log. nginx's own default
-  // is error
-  errors?: "debug" | "info" | "notice" | "warn" | "error" | "crit" | "alert" | "emerg";
+  access?: boolean | string;
+  error?: string;
+  level?: "debug" | "info" | "notice" | "warn" | "error" | "crit" | "alert" | "emerg";
+  docker?: boolean;
 };
 
 export type ServiceSpec = {
-  // Identifies the service, and becomes part of its container name
   name: string;
-  // Image pulled and re-tagged onto the host, pinned rather than floating
   image: string;
-  // Hostname other containers reach this service by, added as an extra host
   alias?: string;
-  // Whether the host brings it back after a reboot or a crash
   restart?: "always" | "unless-stopped";
-  // Container path to the file contents baked into the image at build time
   files?: Record<string, string>;
-  // Settings the image reads on start. These are baked into the container, so
-  // a credential belongs in secrets rather than here
+  // Baked into the container, so a credential belongs in secrets instead
   environment?: Record<string, string>;
-  // Resolved at deploy time and handed over as an env file, so a password
-  // reaches the container without being written down in this repository
   secrets?: SecretRefs;
-  // Pins the last octet, for a service already running at an address it was
-  // given by hand. Drop the pin once the container has been recreated
   address?: number;
-  // Volume name to container path. Without one, an image that declares a
-  // VOLUME gets an anonymous volume nothing in this file can name again
   volumes?: Record<string, string>;
 };
 
-// A directory carried into the runtime image. Optional means the build is
-// allowed not to have produced it, which is a claim about that directory alone
 export type CarryPath = string | { path: string; optional: true };
 
 export type BuildSpec = {
-  // Which preset produced this, carried for diagnostics rather than dispatch
   preset: string;
-  // Fat image the repository is compiled in, with caches mounted
   builderImage: string;
-  // Slim image the compiled output is copied into, and which actually ships
   runtimeImage: string;
-  // Copied and run before the rest of the source. A commit that does not touch
-  // these files reuses the installed dependencies instead of resolving them
-  // again, which is the difference between a deploy and a cold build
+  // Installed before the rest of the source, so an untouched lockfile reuses it
   dependencies?: {
     files: string[];
     step: string;
-    // Root lifecycle scripts removed from the manifest before installing. This
-    // layer holds the manifest and the lockfile alone, so a prepare that wants
-    // the repository, its hooks or its scripts directory cannot run here
+    // This layer holds the manifest and lockfile alone, so these cannot run
     stripScripts?: string[];
   };
-  // Shell commands run in order in the builder. A non-zero exit fails the deploy
   steps: string[];
-  // Directory in the builder that becomes the root of the runtime image
   output: string;
-  // Extra builder directories copied into the runtime image beside the output.
-  // A bare path has to exist, and a build whose output is missing one of these
-  // is a build that failed without saying so
   carry: CarryPath[];
-  // Whether the output tree keeps the repository's own directory structure.
-  // Next's standalone build does: it traces from the workspace root, so an app
-  // in a subdirectory arrives under that subdirectory rather than at the top
+  // Next's standalone build traces from the workspace root and keeps subdirectories
   keepsLayout?: boolean;
-  // Process the runtime image starts, as argv rather than a shell string. It
-  // runs at the app's root, so a path relative to that survives dir
   entrypoint: string[];
-  // Cache names mounted into the builder, keyed per app and environment so two
-  // apps or two environments never share one
   caches: string[];
-  // Whether the checkout follows the submodules named in .gitmodules. An empty
-  // submodule directory builds a working image with the contents missing
   submodules: boolean;
-  // Packages the builder needs before any step runs, typically an SSH client
   aptPackages: string[];
-  // Packages the runtime image needs, typically curl for the health probe
   runtimePackages: string[];
-  // Shell commands run in the runtime image, for what a package manager cannot
-  // install. Above the output copy, so a new commit does not repeat them
   runtimeSteps: string[];
 };
 
-// How a build is decided to work. The commands run in the builder image, which
-// is the one holding the test runner and the dev dependencies, so nothing has
-// to be installed to check a release that is already compiled
 export type VerifySpec = {
-  // Shell commands run in order. A non-zero exit fails the run, and the first
-  // is usually whatever brings the test database to the schema the tests want
   steps: string[];
-  // Defaults to the deployment network, which is what resolves a service by
-  // the alias the app already uses: postgres answers at postgres
   network?: StepNetwork;
-  // Settings the checks need beside the ones the image was built with, a test
-  // database url among them
   environment?: Record<string, string>;
 };
 
 export type HealthSpec = {
-  // Path probed on the container itself, not through the proxy
   path: string;
-  // Decides whether the parsed body means healthy. A body that answers but
-  // fails this is a retry, not a verdict, the container may still be starting
+  // A body that answers but fails this is a retry, not a verdict
   expect: (body: Record<string, unknown>) => boolean;
-  // Attempts before the deploy reverts. Defaults to 5
+  // Defaults to 5 attempts, 5000ms apart, after a 10000ms delay
   retries?: number;
-  // Wait between attempts in milliseconds. Defaults to 5000
   intervalMs?: number;
-  // Wait before the first attempt, covering ordinary start-up. Defaults to 10000
   delayMs?: number;
 };
 
 export type AppSpec = {
-  // Identifies the app. Becomes its container name, cache keys, volume names
-  // and nginx upstream, so changing it orphans everything named after it
+  // Names its container, caches, volumes and upstream; renaming orphans them
   name: string;
-  // Clone URL, fetched over the forwarded SSH agent rather than with a token.
-  // Exactly one of this and path: the source is either cloned or already here
+  // Exactly one of repo and path. A path builds as it stands, ignoring branch
   repo?: string;
-  // A directory on this machine, built as it stands rather than cloned. What a
-  // CI job already checked out is one, and so is the copy you are editing.
-  // Relative to the deployment file. The branch an environment names is not
-  // read for one of these: what is on disk is what ships
   path?: string;
-  // What of that directory goes into the build, relative to it. Only for a
-  // path, and only needed where git cannot answer: a work tree's .gitignore
-  // already says it. Given here it wins, which is how a repository is narrowed
-  // to the one app inside it
   include?: string[];
-  // Nginx location this app answers. "/" is the catch-all, and a mounted route
-  // such as "/api/" has its prefix stripped before the request is proxied
-  route: string;
-  // Port the app listens on inside its container, and which nginx proxies to
+  // "/" is the catch-all; a mounted prefix is stripped. Required with a proxy
+  route?: string;
   port: number;
-  // Environment for the app. Several are merged in the order written, so a
-  // shared ref can come first and a per-app one override it
   secrets?: SecretRefs;
-  // What this app is built from, overriding the environment's branch. At most
-  // one of the three. A branch is tracked, so every deploy takes whatever its
-  // head is by then; a tag or a commit is pinned, and the app stops moving
-  // until this line does. Ignored by an app built from a path
+  // At most one. A branch tracks its head, a tag or commit pins it
   branch?: string;
   tag?: string;
   commit?: string;
-  // Where the app sits in the repository, for a monorepo whose root is not it.
-  // Build steps and the shipped command run there. The dependency install does
-  // not: a workspace lockfile is resolved at the root for every package at once
+  // Build steps run here; the dependency install stays at the repository root
   dir?: string;
-  // How the repository becomes a runnable image
   build: BuildSpec;
-  // What has to be true before traffic is allowed to move to the new container
   health: HealthSpec;
-  // What has to be true for the build to be worth deploying at all. Only
-  // `redkite verify` runs these, so a deploy never pays for them
   verify?: VerifySpec;
-  // Volume name to container path, for state that outlives a deploy
   volumes?: Record<string, string>;
-  // Plain environment for the running container, for what is configuration
-  // rather than a credential. Secrets come from the vault instead
   environment?: Record<string, string>;
-  // Container path to the item whose contents land there, for credentials that
-  // have to be a file rather than an environment variable
   files?: Record<string, SecretRef>;
 };
 
 export type Deployment = {
-  // Prefixes every container, network and volume, and separates one project's
-  // objects from another's on a shared host
   project: string;
-  // Overrides whichever one was selected, for a deployment that has only one
-  // and no reason to keep it in a file. Two of them is two files
   environment?: Environment;
-  // Filled by the loader from the redkite.<name>.config.ts files beside this
-  // one, and from anything package.json names. A deployment does not declare
-  // them: the thing that differs between staging and production is a file, not
-  // a key several levels down a literal
   environments?: Record<string, Environment>;
-  // The derived proxy, which is not something a deployment lists: apps carry
-  // routes, routes need something to resolve them, so there is exactly one
-  proxy?: ProxySpec;
-  // Long-lived containers shared by the apps, not rebuilt on every deploy.
-  // The proxy is not one of them: apps with routes imply exactly one, so it is
-  // derived rather than listed
+  // Derived from the apps' routes. false runs none, publishing per-app ports
+  proxy?: ProxySpec | false;
   services: ServiceSpec[];
-  // The applications. Everything derived, addresses, container names, nginx
-  // upstreams and location blocks, is a function of this list
   apps: AppSpec[];
-  // Work injected into the run. Addressed by where it runs, so nothing here
-  // has to be called
   steps?: AnyStep[];
-  // Everything this deployment opts into: the vault that answers its secret
-  // refs, and whatever else brings steps of its own. Nothing a plugin carries
-  // happens until it is listed here, redkite's own vault included
   plugins?: Plugin[];
-  // How redkite itself behaves, rather than anything it deploys
   options?: DeploymentOptions;
 };
 
 export type DeploymentOptions = {
-  // A run that fails writes everything it said to
-  // /tmp/<project>/<environment>/crash-<time>/: the run's own log, and one file
-  // per step with its output in full. On unless this says false
+  // Writes to /tmp/<project>/<environment>/crash-<time>/. On unless false
   crashLog?: boolean;
 };

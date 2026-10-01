@@ -32,8 +32,7 @@ describe("loading a deployment config", () => {
     assert.equal(config.project, "fixture");
   });
 
-  // What a config transpiled to CommonJS arrives as, which is what happens when
-  // the repository being deployed is itself CommonJS
+  // What a config arrives as when the repository being deployed is CommonJS
   it("unwraps a default that Node nested inside module.exports", async () => {
     const config = await loadConfig(fixture("wrapped"));
     assert.equal(config.project, "fixture");
@@ -44,9 +43,7 @@ describe("loading a deployment config", () => {
   });
 });
 
-// A source path belongs to the file that named it. Read against the working
-// directory instead, a deploy from a workspace would build a different tree
-// from one run at the root
+// Read against the working directory, a workspace deploy would build another tree
 describe("where a local source resolves to", () => {
   it("reads a path against the deployment file, not the shell", async () => {
     const loaded = await loadConfig(fixture("local"));
@@ -63,8 +60,7 @@ describe("where a local source resolves to", () => {
 });
 
 describe("reading the command line", () => {
-  // A flag's value is not the environment, and the environment defaults only
-  // when nothing was actually given
+  // A flag's value is not the environment, which defaults when none was given
   it("does not mistake a flag's value for the environment", () => {
     assert.deepEqual(positional(["deploy", "--config", "a.ts"]), ["deploy"]);
     assert.deepEqual(positional(["deploy", "--config", "a.ts", "production"]), [
@@ -88,8 +84,7 @@ describe("reading the command line", () => {
   });
 });
 
-// A run asked to stop does not exit while what it started is still running.
-// What a press changes is how hard the signal is, not whether there is a wait
+// A press changes how hard the signal is, not whether there is one
 describe("asking a run to stop", () => {
   function recorder() {
     const said: string[] = [];
@@ -146,8 +141,7 @@ describe("asking a run to stop", () => {
     assert.ok(said.length >= 3);
   });
 
-  // Five presses is a build that has ignored SIGKILL. Leaving is offered
-  // rather than taken, because taking it leaves work running unwatched
+  // Leaving is offered, not taken: taking it leaves work running unwatched
   it("offers the way out after five, and says what it costs", () => {
     const { press, said, sent, left } = recorder();
     press(5);
@@ -176,9 +170,7 @@ describe("asking a run to stop", () => {
   });
 });
 
-// --local is the same instruction as buildOn: "local", for one run
-// What differs between staging and production is usually which vault item, and
-// an environment file is where the rest of what differs already lives
+// --local is buildOn: "local" for one run, where the rest of the differences live
 describe("an environment's own secrets", () => {
   const staging: Environment = { branch: "staging", subnet: "10.1.0", publicPort: 80 };
   const production: Environment = { branch: "main", subnet: "10.2.0", publicPort: 80 };
@@ -275,8 +267,7 @@ describe("an environment's own secrets", () => {
     assert.throws(() => withEnvironment(config, "staging"), /wroker/);
   });
 
-  // The CLI folds before it opens anything and the run folds again when it
-  // starts. Doing it twice must be doing it once
+  // Folded twice, by the CLI and by the run, which must be the same as once
   it("adds nothing when folded a second time", () => {
     const config = deployment({
       staging: { ...staging, secrets: { backend: bitwarden.item("staging-backend") } },
@@ -308,8 +299,7 @@ describe("an environment's own secrets", () => {
   });
 });
 
-// How a migration reaches its database, and whether anything is snapshotted
-// first, differ by environment. A step in an environment file says so there
+// Both differ by environment, which an environment file's step says
 describe("an environment's own steps", () => {
   const staging: Environment = { branch: "staging", subnet: "10.1.0", publicPort: 80 };
   const production: Environment = { branch: "main", subnet: "10.2.0", publicPort: 80 };
@@ -418,8 +408,7 @@ describe("building here for one run", () => {
 });
 
 
-// A runner has no keys and no way to be asked for one. Demanding an agent that
-// nothing will use is a deploy that cannot run where it has no reason to fail
+// Demanding an unused agent breaks a deploy that has no reason to hold one
 describe("when an agent is wanted", () => {
   const app = { ...base.apps[0]!, repo: "git@github.com:acme/web.git" };
   const of = (over: Partial<Deployment>): Deployment => ({ ...base, apps: [app], ...over });
