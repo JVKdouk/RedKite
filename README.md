@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="media/redkite.png" alt="redkite" width="200">
+  <img src="media/redkite.png" alt="redkite" width="600">
 </h1>
 
 <p align="center">
