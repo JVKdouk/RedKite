@@ -48,7 +48,7 @@ runs:
 
     # The pinned Bitwarden CLI lands here, and a runner would install it again
     # every run without this. Redkite itself has no dependencies to cache
-    - uses: actions/cache@v4
+    - uses: actions/cache@v6
       with:
         path: ~/.cache/redkite
         key: redkite-${{ runner.os }}-${{ inputs.version }}
