@@ -33,7 +33,7 @@ inputs:
   version:
     description: Which redkite to run. Pinned, because an unpinned deploy tool is a different one each time
     required: false
-    default: 0.1.14
+    default: 0.1.15
   node-version:
     description: Node reads TypeScript itself from 22.18 on, which is what lets redkite load your redkite.config.ts with no build step of your own
     required: false

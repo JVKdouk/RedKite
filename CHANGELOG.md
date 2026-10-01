@@ -56,6 +56,10 @@ that is not a port, two apps on one port, a log file name with no directory, a
 log file name that is a path, `docker: false` with no directory, and both logs
 naming one file.
 
+## 0.1.15 (2026-09-15)
+
+Updates to comment style and repo logo
+
 ## 0.1.14 (2026-09-15)
 
 Nginx rendering moved into `services/proxy.ts` and gained real coverage, with the

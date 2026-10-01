@@ -53,7 +53,7 @@ body:
     id: versions
     attributes:
       label: redkite, node, and docker on the host
-      placeholder: redkite 0.1.14, node 22.18.0, docker 27.3.1
+      placeholder: redkite 0.1.15, node 22.18.0, docker 27.3.1
     validations:
       required: true
 
